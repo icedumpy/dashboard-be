@@ -1,14 +1,25 @@
-from fastapi import FastAPI, Request
+from fastapi import Request
 from fastapi.responses import JSONResponse
 from jose import JWTError
 from app.core.security.auth import decode_token
+from typing import Iterable
 
-app = FastAPI()
+EXEMPT_PREFIXES: tuple[str, ...] = (
+    "/api/v1/auth/login",
+    "/api/v1/auth/refresh",
+    "/api/v1/health",
+    "/docs",
+    "/redoc",
+    "/api/openapi.json",
+)
 
-@app.middleware("http")
+def is_exempt(path: str, prefixes: Iterable[str]) -> bool:
+    return any(path.startswith(p) for p in prefixes)
+
 async def jwt_middleware(request: Request, call_next):
-    # skip for login/refresh endpoints
-    if request.url.path.startswith("/auth/login") or request.url.path.startswith("/auth/refresh"):
+    path = request.url.path
+
+    if is_exempt(path, EXEMPT_PREFIXES):
         return await call_next(request)
 
     auth = request.headers.get("Authorization")

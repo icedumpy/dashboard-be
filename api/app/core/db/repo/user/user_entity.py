@@ -1,4 +1,4 @@
-from sqlalchemy import String, Boolean, Integer, text, func
+from sqlalchemy import String, Boolean, func
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.dialects.postgresql import BIGINT
 from sqlalchemy.types import DateTime
@@ -12,6 +12,8 @@ class User(Base):
     username: Mapped[str | None] = mapped_column(String, unique=True, index=True)
     display_name: Mapped[str] = mapped_column(String, nullable=False)
     password: Mapped[str] = mapped_column(String, nullable=False)
+    line_id: Mapped[int] = mapped_column(BIGINT, nullable=True)
+    shift_id: Mapped[int] = mapped_column(BIGINT, nullable=True)
     role: Mapped[str] = mapped_column(String, nullable=False, default="VIEWER")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())

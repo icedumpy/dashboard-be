@@ -15,7 +15,7 @@ from app.core.security.auth import (
 from app.core.security.auth import get_current_user
 from app.core.db.repo.user.user_schema import LoginIn, TokenPair, RefreshIn, UserOut
 
-router = APIRouter(tags=["auth"])
+router = APIRouter()
 
 @router.post("/login", response_model=TokenPair)
 async def login(payload: LoginIn, db: AsyncSession = Depends(get_db)):
@@ -49,6 +49,7 @@ async def login(payload: LoginIn, db: AsyncSession = Depends(get_db)):
     access = create_access_token(sub=subject)
     refresh = create_refresh_token(sub=subject)
     return TokenPair(access_token=access, refresh_token=refresh)
+
 @router.post("/refresh", response_model=TokenPair)
 async def refresh(payload: RefreshIn, db: AsyncSession = Depends(get_db)):
     # Verify refresh token
@@ -77,12 +78,6 @@ async def refresh(payload: RefreshIn, db: AsyncSession = Depends(get_db)):
     access = create_access_token(sub=subject)
     refresh = create_refresh_token(sub=subject)
     return TokenPair(access_token=access, refresh_token=refresh)
-
-@router.post("/logout")
-async def logout(_: User = Depends(get_current_user)):
-    # Pure JWT has no server-side revocation. Client should discard tokens.
-    # If you use cookies, clear them here instead.
-    return {"ok": True}
 
 @router.get("/me", response_model=UserOut)
 async def me(current: User = Depends(get_current_user)):
