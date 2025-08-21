@@ -6,7 +6,7 @@ class FixRequestBody(BaseModel):
     note: Optional[str] = Field(None, example="Fixed defect using patching method")
 
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "image_ids": [101, 102, 103],
                 "note": "Fixed defect using patching method"
@@ -18,7 +18,7 @@ class DecisionRequestBody(BaseModel):
     reject_reason: Optional[str] = Field(None, example="QC failed at visual inspection")
 
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "decision": "REJECT",
                 "reject_reason": "QC failed at visual inspection"
