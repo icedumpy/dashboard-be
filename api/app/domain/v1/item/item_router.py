@@ -13,39 +13,17 @@ from app.core.db.repo.models import (
     Review, ItemImage, ItemEvent
 )
 from fastapi import Query, Request, Depends
-from app.domain.v1.item.item_schema import FixRequestBody, DecisionRequestBody
+from app.domain.v1.item.item_schema import FixRequestBody
+from app.utils.helper.helper import (
+    require_role,
+    require_same_line,
+    require_same_shift_if_operator,
+    precondition_if_unmodified_since
+)
+
 
 router = APIRouter()
 
-# ---------- helpers ----------
-def require_role(user: User, allowed: List[str]):
-    if user.role not in allowed:
-        raise HTTPException(status_code=403, detail="Forbidden")
-
-def require_same_line(user: User, item: Item):
-    if user.line_id != item.line_id:
-        raise HTTPException(status_code=403, detail="Cross-line operation not allowed")
-
-def require_same_shift_if_operator(user: User, item: Item):
-    if user.role == "OPERATOR" and user.shift_id is not None and user.shift_id != getattr(item, "shift_id", user.shift_id):
-        # item has no shift; we check only user's shift rule as you requested
-        raise HTTPException(status_code=403, detail="Operator shift mismatch")
-
-def precondition_if_unmodified_since(request: Request, last_updated_at: datetime):
-    ims = request.headers.get("If-Unmodified-Since")
-    if not ims:
-        return
-    try:
-        # Expect RFC1123 or ISO8601; accept ISO for simplicity
-        ts = datetime.fromisoformat(ims.replace("Z","+00:00"))
-        if last_updated_at and last_updated_at > ts:
-            raise HTTPException(status_code=412, detail="Precondition Failed")
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid If-Unmodified-Since")
-
-def status_code(item: Item) -> str:
-    # convenience: map id -> code via relationship if loaded; otherwise do a subquery in callers
-    return getattr(item, "status").code if getattr(item, "status", None) else "UNKNOWN"
 
 # ---------- GET /items ----------
 @router.get("", summary="List items")
@@ -242,7 +220,7 @@ async def submit_fix_request(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    require_role(user, ["OPERATOR", "INSPECTOR"])
+    require_role(user, ["OPERATOR"])
     it = await db.get(Item, item_id)
     if not it or it.deleted_at:
         raise HTTPException(status_code=404, detail="Item not found")
@@ -253,46 +231,101 @@ async def submit_fix_request(
     precondition_if_unmodified_since(request, it.updated_at)
 
     # status check
-    st_code = (await db.execute(select(ItemStatus.code).where(ItemStatus.id == it.item_status_id))).scalar()
-    if st_code not in ("DEFECT", "RECHECK"):
+    st_code = (
+        await db.execute(
+            select(ItemStatus.code).where(ItemStatus.id == it.item_status_id)
+        )
+    ).scalar()
+    if st_code not in ("DEFECT", "RECHECK", "REJECTED"):
         raise HTTPException(status_code=400, detail="Fix request allowed only for DEFECT or RECHECK")
 
-    # 409 if pending review exists
-    existing = (await db.execute(
-        select(Review.id).where(Review.item_id == it.id, Review.state == "PENDING")
-    )).first()
-    if existing:
-        raise HTTPException(status_code=409, detail="Pending review exists")
-    
-    note = getattr(body, "note", None)
+    # --- Images validation ---
     image_ids = list(getattr(body, "image_ids", []) or [])
+    if not image_ids:
+        raise HTTPException(status_code=400, detail="Provide at least 1 image_id")
 
+    # Normalize and de-dup
+    try:
+        image_ids = list({int(i) for i in image_ids})
+    except Exception:
+        raise HTTPException(status_code=400, detail="image_ids must be integers")
+
+    # Read current image rows
+    # Adjust ItemImage.* fields to your actual model/columns.
+    rows = await db.execute(
+        select(ItemImage.id, ItemImage.review_id, ItemImage.item_id)
+        .where(ItemImage.id.in_(image_ids))
+    )
+    rows = rows.all()
+
+    found_ids = {r.id for r in rows}
+    missing = [i for i in image_ids if i not in found_ids]
+    if missing:
+        raise HTTPException(status_code=400, detail={"message": "Some image_ids do not exist", "missing": missing})
+
+    already_linked = [r.id for r in rows if r.review_id is not None]
+    deleted = [r.id for r in rows if getattr(r, "deleted_at", None)]
+    wrong_item = [r.id for r in rows if (getattr(r, "item_id", None) not in (None, item_id))]
+
+    if already_linked or deleted or wrong_item:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Invalid images for fix request",
+                "already_linked": already_linked,
+                "deleted": deleted,
+                "wrong_item": wrong_item,
+            },
+        )
+
+    note = getattr(body, "note", None)
+
+    # Create review
     rv = Review(
-        item_id=it.id, review_type="DEFECT_FIX", state="PENDING",
-        submitted_by=user.id, submit_note=note
+        item_id=it.id,
+        review_type="DEFECT_FIX",
+        state="PENDING",
+        submitted_by=user.id,
+        submit_note=note,
     )
     db.add(rv)
-    await db.flush()  # rv.id
+    await db.flush()  # rv.id available
 
-    # link images as FIX
-    if image_ids:
-        await db.execute(
-            text("""
-                UPDATE qc.item_images
-                   SET review_id=:rid, kind='FIX'
-                 WHERE id = ANY(:ids)
-            """),
-            {"rid": rv.id, "ids": image_ids}
+    # Link images as FIX; protect against races (link only if still unlinked & same/none item)
+    # If you don't have item_id on item_images, remove that predicate.
+    upd = await db.execute(
+        text(
+            """
+            UPDATE qc.item_images
+               SET review_id = :rid, kind = 'FIX'
+             WHERE id = ANY(:ids)
+               AND review_id IS NULL
+               AND (item_id IS NULL OR item_id = :item_id)
+            """
+        ),
+        {"rid": rv.id, "ids": image_ids, "item_id": item_id},
+    )
+
+    # If concurrent process linked any image, rowcount will be lower → 409
+    if upd.rowcount != len(image_ids):
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Images changed concurrently; please retry"
         )
 
     # keep current_review_id (per requirement)
     it.current_review_id = rv.id
 
     # event
-    db.add(ItemEvent(
-        item_id=it.id, actor_id=user.id, event_type="FIX_REQUEST_SUBMITTED",
-        to_status_id=it.item_status_id
-    ))
+    db.add(
+        ItemEvent(
+            item_id=it.id,
+            actor_id=user.id,
+            event_type="FIX_REQUEST_SUBMITTED",
+            to_status_id=it.item_status_id,
+        )
+    )
 
     await db.commit()
     return {"review_id": rv.id}
@@ -339,51 +372,3 @@ async def mark_scrap(
     return {"ok": True, "review_id": review_id}
 
 # ---------- PATCH /items/{id}/decision ----------
-@router.patch("/{item_id}/decision")
-async def decide_fix(
-    request: Request,
-    item_id: int,
-    body: DecisionRequestBody,
-    db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    require_role(user, ["INSPECTOR"])
-    it = await db.get(Item, item_id)
-    if not it or it.deleted_at:
-        raise HTTPException(status_code=404, detail="Item not found")
-    require_same_line(user, it)
-
-    precondition_if_unmodified_since(request, it.updated_at)
-
-    review_id = getattr(body, 'review_id')
-    decision = getattr(body, 'decision')
-    note = getattr(body, 'note')
-
-    rv: Review = await db.get(Review, review_id)
-    if not rv or rv.item_id != it.id or rv.state != "PENDING":
-        raise HTTPException(status_code=400, detail="Invalid or non-pending review")
-
-    if decision not in ("APPROVED", "REJECTED"):
-        raise HTTPException(status_code=400, detail="Invalid decision")
-
-    rv.reviewed_by = user.id
-    rv.reviewed_at = datetime.utcnow()
-
-    if decision == "APPROVED":
-        rv.state = "APPROVED"
-        rv.review_note = note
-        new_status_id = (await db.execute(select(ItemStatus.id).where(ItemStatus.code == "QC_PASSED"))).scalar_one()
-        it.item_status_id = new_status_id
-        db.add(ItemEvent(item_id=it.id, actor_id=user.id, event_type="FIX_DECISION_APPROVED",
-                         from_status_id=None, to_status_id=new_status_id))
-    else:
-        rv.state = "REJECTED"
-        rv.reject_reason = note
-        rej_status_id = (await db.execute(select(ItemStatus.id).where(ItemStatus.code == "REJECTED"))).scalar_one()
-        it.item_status_id = rej_status_id
-        db.add(ItemEvent(item_id=it.id, actor_id=user.id, event_type="FIX_DECISION_REJECTED",
-                         from_status_id=None, to_status_id=rej_status_id))
-
-    # keep current_review_id as-is (history)
-    await db.commit()
-    return {"ok": True, "new_status": "QC_PASSED" if decision=="APPROVED" else "REJECTED"}
