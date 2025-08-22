@@ -1,10 +1,11 @@
 # app/domain/v1/items_router.py
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Query, Depends, HTTPException, Request
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
 from datetime import datetime
-import os
+
+
 from app.core.db.session import get_db
 from app.core.security.auth import get_current_user
 from app.core.db.repo.user.user_entity import User
@@ -12,7 +13,6 @@ from app.core.db.repo.models import (
     Item, ItemStatus, ProductionLine, ItemDefect, DefectType,
     Review, ItemImage, ItemEvent
 )
-from fastapi import Query, Request, Depends
 from app.domain.v1.item.item_schema import FixRequestBody
 from app.utils.helper.helper import (
     require_role,
@@ -35,7 +35,7 @@ async def list_items(
     station: Optional[str] = Query(
         None, pattern="^(ROLL|BUNDLE)$", description="filter by station"
     ),
-    line_code: Optional[str] = Query(None, description="e.g. 3 or 4"),
+    line_id: Optional[str] = Query(None, description="e.g. 1 = Line 3, 2 = Line 4"),
     product_code: Optional[str] = Query(None, description="contains match"),
     number: Optional[str] = Query(None, description="roll_number or bundle_number (contains)"),
     job_order_number: Optional[str] = Query(None, description="contains match"),
@@ -70,12 +70,12 @@ async def list_items(
 
     # joins needed for sorting & filters
     q = q.join(ItemStatus, Item.item_status_id == ItemStatus.id)
-    if line_code:
+    if line_id:
         q = q.join(ProductionLine, Item.line_id == ProductionLine.id)
 
     # filters
     if station: q = q.where(Item.station == station)
-    if line_code: q = q.where(ProductionLine.id == line_code)
+    if line_id: q = q.where(ProductionLine.id == line_id)
     if product_code: q = q.where(Item.product_code.ilike(f"%{product_code}%"))
     if number:
         q = q.where(
@@ -138,8 +138,10 @@ async def list_items(
     resp = {
         "data": data,
         "pagination": {
-            "page": page, "page_size": page_size,
-            "total": total, "total_pages": (total + page_size - 1) // page_size
+            "page": page, 
+            "page_size": page_size,
+            "total": total, 
+            "total_pages": (total + page_size - 1) // page_size
         }
     }
     # (optional "included" set can be added if `include` supplied)
