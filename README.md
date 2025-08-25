@@ -1,37 +1,27 @@
-# Practical FastAPI (QC)
+# Write the README again with proper closing triple quotes
 
-## เตรียมค่าแวดล้อม
+readme_path = "/mnt/data/README_Practical_FastAPI_QC.md"
 
+readme_content = """# Practical FastAPI (QC)
+
+FastAPI + SQLAlchemy + Alembic, backed by Postgres. Docker Compose spins up the stack, runs migrations (init + seed), and serves the API.
+
+## 1) Prerequisites
+
+- Docker & Docker Compose
+- (Optional) `psql` for DB debugging
+- (Optional) `make` if you use the Makefile helpers
+
+## 2) Setup
+
+```bash
+# 1) copy envs
 cp .env.example .env
 
-## สตาร์ทระบบ
-
-# จะ build image, รอฐานข้อมูลพร้อม, รัน alembic upgrade head (init + seed) แล้วเปิด API
-
+# 2) build & start (choose ONE of the following)
+# A) if your compose file is at repo root:
 docker compose up -d --build
 
-# ตรวจสอบสุขภาพ
-
-curl http://localhost:8000/health
-
-## ทดสอบดึงข้อมูลตัวอย่าง
-
-curl "http://localhost:8000/counters?limit=10"
-
-## คำสั่ง migration เพิ่มเติม
-
-# สร้างไฟล์ migration ใหม่
-
-docker compose exec api alembic revision -m "add something"
-
-# ใช้งาน migration
-
-docker compose exec api alembic upgrade head
-
-# ย้อน migration
-
-docker compose exec api alembic downgrade -1
-
-## Reset (ลบ data volume)
-
-docker compose down -v
+# B) if your compose lives in api/docker/ (keep .env at repo root):
+docker compose -f api/docker/docker-compose.yml --env-file .env up -d --build
+```
