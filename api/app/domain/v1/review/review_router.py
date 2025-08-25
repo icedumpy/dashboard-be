@@ -14,7 +14,6 @@ from app.core.db.repo.models import (
 from app.domain.v1.review.review_schema import DecisionRequestBody
 from app.utils.helper.helper import (
     require_role,
-    require_same_line,
 )
 
 router = APIRouter()
@@ -139,17 +138,15 @@ async def list_reviews(
         decision_note = getattr(rv, "review_note", None) or getattr(rv, "reject_reason", None)
 
         data.append({
-            "review": {
-                "id": rv.id,
-                "type": rv.review_type,
-                "state": rv.state,
-                "submitted_by": rv.submitted_by,
-                "submitted_at": getattr(rv, "created_at", None),
-                "submit_note": getattr(rv, "submit_note", None),
-                "reviewed_by": getattr(rv, "reviewed_by", None),
-                "reviewed_at": getattr(rv, "reviewed_at", None),
-                "decision_note": decision_note,
-            },
+            "id": rv.id,
+            "type": rv.review_type,
+            "state": rv.state,
+            "submitted_by": rv.submitted_by,
+            "submitted_at": getattr(rv, "created_at", None),
+            "submit_note": getattr(rv, "submit_note", None),
+            "reviewed_by": getattr(rv, "reviewed_by", None),
+            "reviewed_at": getattr(rv, "reviewed_at", None),
+            "decision_note": decision_note,
             "item": {
                 "id": it.id,
                 "station": it.station,
@@ -183,7 +180,6 @@ async def list_reviews(
     
 @router.post("/{review_id}/decision")
 async def decide_fix(
-    request: Request,
     review_id: int,
     body: DecisionRequestBody,
     db: AsyncSession = Depends(get_db),
@@ -193,11 +189,9 @@ async def decide_fix(
     rv = await db.get(Review, review_id)
     if not rv:
         raise HTTPException(status_code=404, detail="Review not found")
-      
-    it = await db.get(Item, rv.item_id)
-      
-    require_same_line(user, it)
 
+    it = await db.get(Item, rv.item_id)
+    
     decision = getattr(body, 'decision')
     note = getattr(body, 'note')
 

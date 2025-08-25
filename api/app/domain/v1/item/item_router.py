@@ -378,13 +378,9 @@ async def list_item_images(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    # auth
-    require_role(user, ["VIEWER", "OPERATOR", "INSPECTOR"])
     it = await db.get(Item, item_id)
     if not it or getattr(it, "deleted_at", None):
         raise HTTPException(status_code=404, detail="Item not found")
-    if user.role != "INSPECTOR":
-        require_same_line(user, it)
 
     # query
     q = select(ItemImage).where(ItemImage.item_id == item_id)

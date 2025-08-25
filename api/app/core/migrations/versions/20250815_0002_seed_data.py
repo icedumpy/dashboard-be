@@ -45,23 +45,23 @@ def upgrade() -> None:
       -- Operators + Inspectors + Viewer
       INSERT INTO "user".users (username, display_name, password, role, line_id, shift_id, is_active)
       VALUES
-        ('op_3a','Operator L3A', crypt('op_3a', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l3),(SELECT id FROM sA), TRUE),
-        ('op_3b','Operator L3B', crypt('op_3b', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l3),(SELECT id FROM sB), TRUE),
-        ('op_3c','Operator L3C', crypt('op_3c', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l3),(SELECT id FROM sC), TRUE),
-        ('op_3d','Operator L3D', crypt('op_3d', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l3),(SELECT id FROM sD), TRUE),
-        ('op_4a','Operator L4A', crypt('op_4a', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l4),(SELECT id FROM sA), TRUE),
-        ('op_4b','Operator L4B', crypt('op_4b', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l4),(SELECT id FROM sB), TRUE),
-        ('op_4c','Operator L4C', crypt('op_4c', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l4),(SELECT id FROM sC), TRUE),
-        ('op_4d','Operator L4D', crypt('op_4d', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l4),(SELECT id FROM sD), TRUE),
-        ('qc_3a','QC L3A', crypt('qc_3a', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l3),(SELECT id FROM sA), TRUE),
-        ('qc_3b','QC L3B', crypt('qc_3b', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l3),(SELECT id FROM sB), TRUE),
-        ('qc_3c','QC L3C', crypt('qc_3c', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l3),(SELECT id FROM sC), TRUE),
-        ('qc_3d','QC L3D', crypt('qc_3d', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l3),(SELECT id FROM sD), TRUE),
-        ('qc_4a','QC L4A', crypt('qc_4a', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l4),(SELECT id FROM sA), TRUE),
-        ('qc_4b','QC L4B', crypt('qc_4b', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l4),(SELECT id FROM sB), TRUE),
-        ('qc_4c','QC L4C', crypt('qc_4c', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l4),(SELECT id FROM sC), TRUE),
-        ('qc_4d','QC L4D', crypt('qc_4d', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l4),(SELECT id FROM sD), TRUE),
-        ('viewer','Viewer', crypt('viewer', gen_salt('bf', 12)),'VIEWER',NULL,NULL, TRUE)
+        ('OPTH03A','Operator L3A', crypt('133Abc###', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l3),(SELECT id FROM sA), TRUE),
+        ('OPTH03B','Operator L3B', crypt('134Abc###', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l3),(SELECT id FROM sB), TRUE),
+        ('OPTH03C','Operator L3C', crypt('130Abc###', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l3),(SELECT id FROM sC), TRUE),
+        ('OPTH03D','Operator L3D', crypt('135Abc###', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l3),(SELECT id FROM sD), TRUE),
+        ('OPTH04A','Operator L4A', crypt('143Abc###', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l4),(SELECT id FROM sA), TRUE),
+        ('OPTH04B','Operator L4B', crypt('144Abc###', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l4),(SELECT id FROM sB), TRUE),
+        ('OPTH04C','Operator L4C', crypt('140Abc###', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l4),(SELECT id FROM sC), TRUE),
+        ('OPTH04D','Operator L4D', crypt('145Abc###', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l4),(SELECT id FROM sD), TRUE),
+        ('QATH03A','QC L3A'      , crypt('456Abc###', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l3),(SELECT id FROM sA), TRUE),
+        ('QATH03B','QC L3B'      , crypt('457Abc###', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l3),(SELECT id FROM sB), TRUE),
+        ('QATH03C','QC L3C'      , crypt('458Abc###', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l3),(SELECT id FROM sC), TRUE),
+        ('QATH03D','QC L3D'      , crypt('459Abc###', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l3),(SELECT id FROM sD), TRUE),
+        ('QATH04A','QC L4A'      , crypt('460Abc###', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l4),(SELECT id FROM sA), TRUE),
+        ('QATH04B','QC L4B'      , crypt('461Abc###', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l4),(SELECT id FROM sB), TRUE),
+        ('QATH04C','QC L4C'      , crypt('462Abc###', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l4),(SELECT id FROM sC), TRUE),
+        ('QATH04D','QC L4D'      , crypt('463Abc###', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l4),(SELECT id FROM sD), TRUE),
+        ('Fitesacnc2','Viewer'   , crypt('FCNC2###', gen_salt('bf', 12)),'VIEWER',NULL,NULL, TRUE)
       ON CONFLICT (username) DO NOTHING;
 
 
