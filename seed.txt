@@ -67,7 +67,7 @@ SELECT id,(SELECT id FROM "user".users WHERE username='op_3a'),
 FROM ins;
 
 -- ROLL: SCRAP (ยังไม่ confirm)
-WITH line AS (SELECT id FROM qc.production_lines WHERE code='3')
+WITH line AS (SELECT id FROM qc.production_lines WHERE code='4')
 INSERT INTO qc.items
   (station,line_id,product_code,roll_number,job_order_number,roll_width,detected_at,
     item_status_id,ai_note)
@@ -79,10 +79,10 @@ SELECT 'ROLL', line.id, '13W10C2MB','250723017E17','3D3G256049',275, now()-inter
 WITH line AS (SELECT id FROM qc.production_lines WHERE code='4'),
       ins AS (
         INSERT INTO qc.items
-          (station,line_id,product_code,bundle_number,job_order_number,roll_width,detected_at,
+          (station,line_id,bundle_number,detected_at,
           item_status_id,ai_note)
         SELECT
-          'BUNDLE', line.id, '22X90Y7AA','250723017E16','4A9B128099',250, now()-interval '2 hour',
+          'BUNDLE', line.id,'250723017E16', now()-interval '2 hour',
           (SELECT id FROM qc.item_statuses WHERE code='DEFECT'),
           'Defect: ฉลาก'
         FROM line
@@ -97,10 +97,10 @@ FROM ins;
 WITH line AS (SELECT id FROM qc.production_lines WHERE code='4'),
       ins AS (
         INSERT INTO qc.items
-          (station,line_id,product_code,bundle_number,job_order_number,roll_width,detected_at,
+          (station,line_id,bundle_number,detected_at,
           item_status_id,ai_note)
         SELECT
-          'BUNDLE', line.id, '22X90Y7AA','250723017E17','4A9B128100',255, now()-interval '3 hour',
+          'BUNDLE', line.id,'250723017E17', now()-interval '3 hour',
           (SELECT id FROM qc.item_statuses WHERE code='DEFECT'),
           'Defect: บาร์โค้ด'
         FROM line
