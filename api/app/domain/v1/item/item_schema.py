@@ -1,5 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import List, Optional
+from datetime import datetime
+from app.core.db.repo.models import EStation, EItemStatusCode
 
 class FixRequestBody(BaseModel):
     image_ids: List[int] = Field(..., example=[1])
@@ -12,3 +14,35 @@ class FixRequestBody(BaseModel):
                 "note": "Fixed defect using patching method"
             }
         }
+        
+        
+class ItemReportRequest(BaseModel):
+    line_id: int = Field(..., ge=1, description="Numeric line id")
+    station: EStation = Field(..., description="ROLL or BUNDLE")
+
+    # optional filters (same as list UI)
+    product_code: Optional[str] = Field(None, description="contains match")
+    number: Optional[str] = Field(None, description="roll_number or bundle_number (contains)")
+    job_order_number: Optional[str] = Field(None, description="contains match")
+    roll_width_min: Optional[float] = Field(None, ge=0)
+    roll_width_max: Optional[float] = Field(None, ge=0)
+    status: Optional[List[EItemStatusCode]] = Field(None, description="repeatable status codes")
+    detected_from: Optional[datetime] = Field(None, description="ISO8601")
+    detected_to: Optional[datetime] = Field(None, description="ISO8601")
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "line_id": 1,
+                "station": "ROLL",
+                "product_code": "13W10",
+                "number": "4622",
+                "job_order_number": "3D3G",
+                "roll_width_min": 100,
+                "roll_width_max": 330,
+                "status": ["DEFECT", "SCRAP", "QC_PASSED"],
+                "detected_from": "2025-08-20T00:00:00Z",
+                "detected_to": "2025-08-22T23:59:59Z",
+            }
+        }
+    }

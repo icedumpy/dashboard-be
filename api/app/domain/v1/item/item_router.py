@@ -2,14 +2,15 @@
 from fastapi import APIRouter, Query, Depends, HTTPException, Request
 from typing import List, Optional, Annotated
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, text
+from sqlalchemy import select, func, or_, and_, literal_column, literal, case, text
 from datetime import datetime
 from pathlib import PurePosixPath
 from app.core.config.config import settings
-
+from io import StringIO
 from app.core.db.session import get_db
 from app.core.security.auth import get_current_user
 from app.core.db.repo.models import User
+from app.domain.v1.item.item_schema import ItemReportRequest
 from app.core.db.repo.models import (
     Item, ItemStatus, ProductionLine, ItemDefect, DefectType,
     Review, ItemImage, ItemEvent
@@ -24,7 +25,9 @@ from app.utils.helper.helper import (
     require_same_shift_if_operator,
     precondition_if_unmodified_since
 )
-
+from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import aliased
+import csv
 
 router = APIRouter()
 
@@ -405,4 +408,172 @@ async def list_item_images(
     return {"data": data}
 
 
+@router.post("/report", summary="Download CSV report")
+async def get_csv_item_report(
+    body: ItemReportRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    # ---- Auth ----
+    require_role(user, ["VIEWER"])
+
+    # Resolve line code for filename (fallback to id if missing)
+    line_code = await db.scalar(select(ProductionLine.code).where(ProductionLine.id == body.line_id))
+    line_code = str(line_code or body.line_id)
+
+    # ---- Aggregated defects (item_id -> "TOP, BARCODE") with DISTINCT names ----
+    defects_subq = (
+        select(
+            ItemDefect.item_id.label("item_id"),
+            func.string_agg(func.distinct(DefectType.name_th), literal(", ")).label("defects_csv"),
+        )
+        .join(DefectType, DefectType.id == ItemDefect.defect_type_id)
+        .group_by(ItemDefect.item_id)
+        .subquery()
+    )
+
+    roll_match = aliased(Item)  # for BUNDLE fallback
+
+    # ---- Base query (may still duplicate due to roll_match) ----
+    q = (
+        select(
+            Item.id.label("item_id"),
+            Item.station,
+            Item.line_id,
+            Item.product_code,
+            Item.roll_number,
+            Item.bundle_number,
+            Item.job_order_number,
+            Item.roll_width,
+            Item.detected_at,
+            Item.ai_note,
+            ItemStatus.code.label("status_code"),
+            defects_subq.c.defects_csv,
+            roll_match.product_code.label("r_product_code"),
+            roll_match.job_order_number.label("r_job_order_number"),
+            roll_match.roll_width.label("r_roll_width"),
+        )
+        .join(ItemStatus, ItemStatus.id == Item.item_status_id)
+        .outerjoin(defects_subq, defects_subq.c.item_id == Item.id)
+        .where(
+            Item.line_id == body.line_id,
+            Item.station == body.station.value,
+            Item.deleted_at.is_(None),
+        )
+    )
+
+    if body.station == EStation.BUNDLE:
+        q = q.outerjoin(
+            roll_match,
+            and_(
+                roll_match.station == EStation.ROLL.value,
+                roll_match.line_id == Item.line_id,
+                roll_match.roll_number == Item.bundle_number,
+                roll_match.deleted_at.is_(None),
+            ),
+        )
+
+    # ---- Filters ----
+    if body.product_code:
+        like = f"%{body.product_code}%"
+        if body.station == EStation.BUNDLE:
+            q = q.where(or_(Item.product_code.ilike(like), roll_match.product_code.ilike(like)))
+        else:
+            q = q.where(Item.product_code.ilike(like))
+
+    if body.number:
+        like = f"%{body.number}%"
+        q = q.where(or_(Item.roll_number.ilike(like), Item.bundle_number.ilike(like)))
+
+    if body.job_order_number:
+        like = f"%{body.job_order_number}%"
+        if body.station == EStation.BUNDLE:
+            q = q.where(or_(Item.job_order_number.ilike(like), roll_match.job_order_number.ilike(like)))
+        else:
+            q = q.where(Item.job_order_number.ilike(like))
+
+    if body.roll_width_min is not None or body.roll_width_max is not None:
+        width_expr = func.coalesce(Item.roll_width, roll_match.roll_width) if body.station == EStation.BUNDLE else Item.roll_width
+        if body.roll_width_min is not None:
+            q = q.where(width_expr >= body.roll_width_min)
+        if body.roll_width_max is not None:
+            q = q.where(width_expr <= body.roll_width_max)
+
+    if body.status:
+        q = q.where(ItemStatus.code.in_([s.value for s in body.status]))
+
+    if body.detected_from:
+        q = q.where(Item.detected_at >= body.detected_from)
+    if body.detected_to:
+        q = q.where(Item.detected_at <= body.detected_to)
+
+    # ---- Deduplicate to one row per item (Postgres DISTINCT ON) ----
+    # DISTINCT ON requires ORDER BY begin with the distinct keys; we’ll sort final rows in Python by timestamp desc.
+    q = q.distinct(Item.id).order_by(Item.id, Item.detected_at.desc(), Item.id.desc())
+
+    rows = (await db.execute(q)).all()
+
+    # Keep CSV order as requested: detected_at DESC then id DESC
+    rows.sort(key=lambda r: (r.detected_at or datetime.min, r.item_id), reverse=True)
+
+    # ---- CSV stream ----
+    header = [
+        "PRODUCT CODE",
+        "ROLL NUMBER" if body.station == EStation.ROLL else "BUNDLE NUMBER",
+        "JOB ORDER NUMBER",
+        "ROLL WIDTH",
+        "TIMESTAMP",
+        "STATUS",
+    ]
+
+    def row_to_list(r) -> list:
+        # Fallbacks for BUNDLE from matched roll
+        product_code_val = r.product_code
+        job_order_val = r.job_order_number
+        width_val = r.roll_width
+        if body.station == EStation.BUNDLE:
+            product_code_val = product_code_val or r.r_product_code
+            job_order_val = job_order_val or r.r_job_order_number
+            width_val = width_val if width_val is not None else r.r_roll_width
+
+        num_val = r.roll_number if body.station == EStation.ROLL else r.bundle_number
+        status_str = _status_label(r.status_code, r.defects_csv, r.ai_note)
+        ts = r.detected_at.isoformat(timespec="seconds") if r.detected_at else ""
+        width_out = "" if width_val is None else str(width_val)
+
+        return [product_code_val or "", num_val or "", job_order_val or "", width_out, ts, status_str]
+
+    def csv_iter():
+        buf = StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(header); yield buf.getvalue(); buf.seek(0); buf.truncate(0)
+        for r in rows:
+            writer.writerow(row_to_list(r))
+            yield buf.getvalue(); buf.seek(0); buf.truncate(0)
+
+    today = datetime.now().strftime("%Y%m%d")
+    filename = f"items_{body.station.value.lower()}_line{line_code}_{today}.csv"
+
+    return StreamingResponse(
+        csv_iter(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "no-store"},
+    )
+
+
+
+def _status_label(code: str, defects_csv: Optional[str], ai_note: Optional[str]) -> str:
+    if code == "DEFECT":
+        return f"Defect{': ' + defects_csv if defects_csv else ''}"
+    if code == "SCRAP":
+        return f"Scrap{(' (' + ai_note + ')') if ai_note else ''}"
+    if code == "QC_PASSED":
+        return "QC Passed"
+    if code == "NORMAL":
+        return "Normal"
+    if code == "RECHECK":
+        return "Recheck"
+    if code == "REJECTED":
+        return "Rejected"
+    return code or ""
 # ---------- PATCH /items/{id}/decision ----------
