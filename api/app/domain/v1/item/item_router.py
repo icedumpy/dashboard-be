@@ -395,14 +395,12 @@ async def list_item_images(
     image_dir = settings.IMAGES_DIR
     for im in rows:
         path = _norm(im.path)
-        tpath = _norm(getattr(im, "thumb_path", None)) if hasattr(im, "thumb_path") else None
         data.append({
             "id": im.id,
             "kind": im.kind,
             "created_at": im.uploaded_at,
             "meta": im.meta,
             "url": f"/{image_dir}/{path}" if path else None,
-            "thumb_url": f"/{image_dir}/{tpath}" if tpath else None,
         })
     return {"data": data}
 
