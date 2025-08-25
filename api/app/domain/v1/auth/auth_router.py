@@ -5,13 +5,18 @@ from sqlalchemy import select, or_
 from jose import JWTError
 
 from app.core.db.session import get_db
-from app.core.db.repo.user.user_entity import User
 from app.core.security.auth import (
     verify_password,
     create_access_token,
     create_refresh_token,
     decode_token,
 )
+from app.core.db.repo.models import (
+    User,
+    ProductionLine,
+    Shift
+)
+from sqlalchemy.orm import selectinload
 from app.core.security.auth import get_current_user
 from app.core.db.repo.user.user_schema import LoginIn, TokenPair, RefreshIn, UserOut
 
@@ -80,5 +85,52 @@ async def refresh(payload: RefreshIn, db: AsyncSession = Depends(get_db)):
     return TokenPair(access_token=access, refresh_token=refresh)
 
 @router.get("/me", response_model=UserOut)
-async def me(current: User = Depends(get_current_user)):
-    return current
+async def me(
+    current: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = (
+        select(User, ProductionLine, Shift)
+        .join(ProductionLine, User.line_id == ProductionLine.id)
+        .join(Shift,        User.shift_id == Shift.id)
+        .where(User.id == current.id)
+        .limit(1)
+    )
+
+    res = await db.execute(stmt)
+    row = res.first()
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user, line, shift = row
+
+    if line is None:
+        print("line: None")
+    else:
+        print(f"line => id={line.id}, code={getattr(line, 'code', None)}, name={getattr(line, 'name', None)}")
+        
+        
+    payload = {
+        "id": user.id,
+        "display_name": user.display_name,
+        "role": user.role,
+        "is_active": user.is_active,
+        # include if your UserOut expects it:
+        "username": user.username,
+        # nested objects only if present
+        "line": None if line is None else {
+            "id": line.id,
+            "code": getattr(line, "code", None),
+            "name": getattr(line, "name", None),
+        },
+        "shift": None if shift is None else {
+            "id": shift.id,
+            "code": getattr(shift, "code", None),
+            "name": getattr(shift, "name", None),
+            "start_time": getattr(shift, "start_time", None),
+            "end_time": getattr(shift, "end_time", None),
+        },
+    }
+
+    return UserOut(**payload)  # FastAPI will validate/shape the response
+

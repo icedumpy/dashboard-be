@@ -1,13 +1,31 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
+from typing import Optional
+from datetime import time
+
+
+class ProductionLineOut(BaseModel):
+    id: int
+    code: Optional[str] = None
+    name: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+
+class ShiftOut(BaseModel):
+    id: int
+    code: Optional[str] = None
+    name: Optional[str] = None
+    start_time: Optional[time] = None
+    end_time: Optional[time] = None
+    model_config = ConfigDict(from_attributes=True)
 
 class UserOut(BaseModel):
     id: int
-    username: str | None
+    username: Optional[str] = None
     display_name: str
     role: str
     is_active: bool
-    class Config:
-        from_attributes = True
+    line: Optional[ProductionLineOut] = None
+    shift: Optional[ShiftOut] = None
+    model_config = ConfigDict(from_attributes=True)
 
 class LoginIn(BaseModel):
     username: str

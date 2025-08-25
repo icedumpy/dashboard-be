@@ -47,6 +47,23 @@ class EItemStatusCode(str, Enum):
 # Master tables
 # =========================
 
+class User(Base):
+    __tablename__ = "users"
+    __table_args__ = {"schema": "user"}  # matches your prior schema choice
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    username: Mapped[str | None] = mapped_column(String, unique=True, index=True)
+    display_name: Mapped[str] = mapped_column(String, nullable=False)
+    password: Mapped[str] = mapped_column(String, nullable=False)
+    line_id: Mapped[int] = mapped_column(BIGINT, nullable=True)
+    shift_id: Mapped[int] = mapped_column(BIGINT, nullable=True)
+    role: Mapped[str] = mapped_column(String, nullable=False, default="VIEWER")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
 class ProductionLine(Base):
     __tablename__ = "production_lines"
     __table_args__ = {"schema": "qc"}
