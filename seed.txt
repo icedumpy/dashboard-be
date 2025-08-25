@@ -129,6 +129,22 @@ SELECT 'ROLL', line.id, '13W10C2MB','462267','3D3G256051',210, now()-interval '6
         (SELECT id FROM qc.item_statuses WHERE code='QC_PASSED'),
         'QC passed after recheck' FROM line;
 
+-- ROLL: RECHECK
+WITH line AS (SELECT id FROM qc.production_lines WHERE code='3')
+INSERT INTO qc.items
+  (station,line_id,product_code,roll_number,job_order_number,roll_width,detected_at,
+    item_status_id,ai_note)
+SELECT 'ROLL', line.id, '13W10C2MB','462268','3D3G256051',210, now()-interval '6 hour',
+        (SELECT id FROM qc.item_statuses WHERE code='RECHECK'),
+        'QC passed after recheck' FROM line;
+WITH line AS (SELECT id FROM qc.production_lines WHERE code='3')
+INSERT INTO qc.items
+  (station,line_id,product_code,roll_number,job_order_number,roll_width,detected_at,
+    item_status_id,ai_note)
+SELECT 'ROLL', line.id, '13W10C2MB','462269','3D3G256051',210, now()-interval '6 hour',
+        (SELECT id FROM qc.item_statuses WHERE code='RECHECK'),
+        'QC passed after recheck' FROM line;
+
 INSERT INTO qc.item_images (item_id, review_id, kind, path) VALUES
   (1, NULL, 'DETECTED', '2025-08/21/line_3/roll/250814002D05/capture/698877.jpg'),
   (2, NULL, 'DETECTED', '2025-08/21/line_3/roll/250814002D06/capture/698878.jpg'),
