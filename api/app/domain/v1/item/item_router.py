@@ -1,22 +1,19 @@
 # app/domain/v1/items_router.py
 from fastapi import APIRouter, Query, Depends, HTTPException, Request
-from typing import List, Optional, Annotated
+from typing import Optional, Annotated
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, or_, and_, literal_column, literal, case, text
+from sqlalchemy import select, func, or_, and_, literal, text
 from datetime import datetime
 from pathlib import PurePosixPath
 from app.core.config.config import settings
 from io import StringIO
 from app.core.db.session import get_db
 from app.core.security.auth import get_current_user
-from app.core.db.repo.models import User
 from app.domain.v1.item.item_schema import ItemReportRequest
 from app.core.db.repo.models import (
     Item, ItemStatus, ProductionLine, ItemDefect, DefectType,
-    Review, ItemImage, ItemEvent
-)
-from app.core.db.repo.models import (
-    EStation,EItemStatusCode
+    Review, ItemImage, ItemEvent,
+    EStation,EItemStatusCode,User
 )
 from app.domain.v1.item.item_schema import FixRequestBody
 from app.utils.helper.helper import (
@@ -106,6 +103,22 @@ async def list_items(
         # get status code
         st = (await db.execute(select(ItemStatus.code).where(ItemStatus.id == it.item_status_id))).scalar()
 
+        
+        roll_item = {}
+        if it.station == EStation.BUNDLE:
+            q = (
+                select(Item)
+                .where(
+                    Item.station == EStation.ROLL,                # match a ROLL item
+                    Item.roll_number == it.bundle_number,   # same number as bundle
+                    Item.line_id == it.line_id,             # same line
+                    Item.deleted_at.is_(None),              # exclude soft-deleted
+                )
+                .order_by(Item.detected_at.desc(), Item.id.desc())  # pick the latest deterministically
+                .limit(1)
+            )
+            roll_item = (await db.execute(q)).scalars().first()
+
         data.append({
             "id": it.id,
             "station": it.station,
@@ -124,6 +137,7 @@ async def list_items(
             "current_review_id": it.current_review_id,
             "images_count": imgs,
             "defects_count": defs,
+            "roll_data": roll_item
         })
 
     resp = {
