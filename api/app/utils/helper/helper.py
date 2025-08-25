@@ -1,7 +1,7 @@
 from fastapi import HTTPException, Request
 from typing import List
 from datetime import datetime
-from app.core.db.repo.user.user_entity import User
+from app.core.db.repo.models import User
 from app.core.db.repo.models import (
     Item
 )
@@ -37,13 +37,17 @@ def precondition_if_unmodified_since(request: Request, last_updated_at: datetime
         raise HTTPException(status_code=400, detail="Invalid If-Unmodified-Since")
 
 def safe_fs_path(relpath: str) -> Path:
-    """Normalize and ensure relpath resolves inside IMAGES_DIR."""
-    rel = PurePosixPath(relpath).as_posix().lstrip("/")
-    if ".." in rel:
+    """
+    Normalize relpath and ensure it resolves inside IMAGES_DIR.
+    Blocks path traversal and absolute paths.
+    """
+    base = Path(IMAGES_DIR).resolve()  # <-- fix: make sure it's a Path
+
+    rel_norm = PurePosixPath(relpath.replace("\\", "/")).as_posix().lstrip("/")
+
+    fs = (base / rel_norm).resolve(strict=False)
+
+    if not fs.is_relative_to(base):
         raise HTTPException(status_code=400, detail="Invalid image path")
-    fs = (IMAGES_DIR / rel).resolve()
-    try:
-        fs.relative_to(IMAGES_DIR)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid image path")
+
     return fs
