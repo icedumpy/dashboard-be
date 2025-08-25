@@ -9,7 +9,7 @@ from app.core.config.config import settings
 
 from app.core.db.session import get_db
 from app.core.security.auth import get_current_user
-from app.core.db.repo.user.user_entity import User
+from app.core.db.repo.models import User
 from app.core.db.repo.models import (
     Item, ItemStatus, ProductionLine, ItemDefect, DefectType,
     Review, ItemImage, ItemEvent

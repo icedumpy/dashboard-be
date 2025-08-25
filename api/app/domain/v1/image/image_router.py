@@ -14,7 +14,7 @@ from pathlib import Path
 
 from app.core.db.session import get_db
 from app.core.security.auth import get_current_user
-from app.core.db.repo.user.user_entity import User
+from app.core.db.repo.models import User
 from app.core.db.repo.models import Item, ItemImage
 from app.utils.helper.helper import require_role, safe_fs_path
 

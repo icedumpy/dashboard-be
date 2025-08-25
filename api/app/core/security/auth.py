@@ -9,9 +9,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config.config import settings
-from app.core.db.repo.user.user_entity import User
 from app.core.db.session import get_db
-
+from app.core.db.repo.models import User
 pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
