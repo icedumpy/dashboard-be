@@ -45,23 +45,23 @@ def upgrade() -> None:
       -- Operators + Inspectors + Viewer
       INSERT INTO "user".users (username, display_name, password, role, line_id, shift_id, is_active)
       VALUES
-        ('op_3a','Operator L3A', crypt('changeme', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l3),(SELECT id FROM sA), TRUE),
-        ('op_3b','Operator L3B', crypt('changeme', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l3),(SELECT id FROM sB), TRUE),
-        ('op_3c','Operator L3C', crypt('changeme', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l3),(SELECT id FROM sC), TRUE),
-        ('op_3d','Operator L3D', crypt('changeme', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l3),(SELECT id FROM sD), TRUE),
-        ('op_4a','Operator L4A', crypt('changeme', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l4),(SELECT id FROM sA), TRUE),
-        ('op_4b','Operator L4B', crypt('changeme', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l4),(SELECT id FROM sB), TRUE),
-        ('op_4c','Operator L4C', crypt('changeme', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l4),(SELECT id FROM sC), TRUE),
-        ('op_4d','Operator L4D', crypt('changeme', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l4),(SELECT id FROM sD), TRUE),
-        ('qc_3a','QC L3A', crypt('changeme', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l3),(SELECT id FROM sA), TRUE),
-        ('qc_3b','QC L3B', crypt('changeme', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l3),(SELECT id FROM sB), TRUE),
-        ('qc_3c','QC L3C', crypt('changeme', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l3),(SELECT id FROM sC), TRUE),
-        ('qc_3d','QC L3D', crypt('changeme', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l3),(SELECT id FROM sD), TRUE),
-        ('qc_4a','QC L4A', crypt('changeme', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l4),(SELECT id FROM sA), TRUE),
-        ('qc_4b','QC L4B', crypt('changeme', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l4),(SELECT id FROM sB), TRUE),
-        ('qc_4c','QC L4C', crypt('changeme', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l4),(SELECT id FROM sC), TRUE),
-        ('qc_4d','QC L4D', crypt('changeme', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l4),(SELECT id FROM sD), TRUE),
-        ('viewer','Viewer', crypt('changeme', gen_salt('bf', 12)),'VIEWER',NULL,NULL, TRUE)
+        ('op_3a','Operator L3A', crypt('op_3a', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l3),(SELECT id FROM sA), TRUE),
+        ('op_3b','Operator L3B', crypt('op_3b', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l3),(SELECT id FROM sB), TRUE),
+        ('op_3c','Operator L3C', crypt('op_3c', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l3),(SELECT id FROM sC), TRUE),
+        ('op_3d','Operator L3D', crypt('op_3d', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l3),(SELECT id FROM sD), TRUE),
+        ('op_4a','Operator L4A', crypt('op_4a', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l4),(SELECT id FROM sA), TRUE),
+        ('op_4b','Operator L4B', crypt('op_4b', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l4),(SELECT id FROM sB), TRUE),
+        ('op_4c','Operator L4C', crypt('op_4c', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l4),(SELECT id FROM sC), TRUE),
+        ('op_4d','Operator L4D', crypt('op_4d', gen_salt('bf', 12)),'OPERATOR',(SELECT id FROM l4),(SELECT id FROM sD), TRUE),
+        ('qc_3a','QC L3A', crypt('qc_3a', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l3),(SELECT id FROM sA), TRUE),
+        ('qc_3b','QC L3B', crypt('qc_3b', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l3),(SELECT id FROM sB), TRUE),
+        ('qc_3c','QC L3C', crypt('qc_3c', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l3),(SELECT id FROM sC), TRUE),
+        ('qc_3d','QC L3D', crypt('qc_3d', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l3),(SELECT id FROM sD), TRUE),
+        ('qc_4a','QC L4A', crypt('qc_4a', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l4),(SELECT id FROM sA), TRUE),
+        ('qc_4b','QC L4B', crypt('qc_4b', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l4),(SELECT id FROM sB), TRUE),
+        ('qc_4c','QC L4C', crypt('qc_4c', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l4),(SELECT id FROM sC), TRUE),
+        ('qc_4d','QC L4D', crypt('qc_4d', gen_salt('bf', 12)),'INSPECTOR',(SELECT id FROM l4),(SELECT id FROM sD), TRUE),
+        ('viewer','Viewer', crypt('viewer', gen_salt('bf', 12)),'VIEWER',NULL,NULL, TRUE)
       ON CONFLICT (username) DO NOTHING;
 
 
@@ -82,139 +82,6 @@ def upgrade() -> None:
         ('TOP','ด้านบน',30),
         ('BOTTOM','ด้านล่าง',40)
       ON CONFLICT (code) DO NOTHING;
-
-
-      -- ROLL: DEFECT (BOTTOM)
-      WITH line AS (SELECT id FROM qc.production_lines WHERE code='3'),
-          ins AS (
-            INSERT INTO qc.items
-              (station,line_id,product_code,roll_number,job_order_number,roll_width,detected_at,
-              item_status_id,ai_note)
-            SELECT
-              'ROLL', line.id, '13W10C2MB','462263','3D3G256046',193, now()-interval '30 min',
-              (SELECT id FROM qc.item_statuses WHERE code='DEFECT'),
-              'Defect: ด้านล่าง'
-            FROM line RETURNING id
-          )
-      INSERT INTO qc.item_defects(item_id, defect_type_id, meta)
-      SELECT ins.id,(SELECT id FROM qc.defect_types WHERE code='BOTTOM'),
-              '{"source":"AI"}'::jsonb
-      FROM ins;
-
-      -- ROLL: DEFECT (TOP)
-      WITH line AS (SELECT id FROM qc.production_lines WHERE code='3'),
-            ins AS (
-              INSERT INTO qc.items
-                (station,line_id,product_code,roll_number,job_order_number,roll_width,detected_at,
-                item_status_id,ai_note)
-              SELECT
-                'ROLL', line.id, '13W10C2MB','462264','3D3G256047',190, now()-interval '1 hour',
-                (SELECT id FROM qc.item_statuses WHERE code='DEFECT'),
-                'Defect: ด้านบน'
-              FROM line RETURNING id
-            )
-      INSERT INTO qc.item_defects(item_id, defect_type_id, meta)
-      SELECT ins.id,(SELECT id FROM qc.defect_types WHERE code='TOP'),
-              '{"source":"AI"}'::jsonb
-      FROM ins;
-
-      -- ROLL: DEFECT (BARCODE)
-      WITH line AS (SELECT id FROM qc.production_lines WHERE code='3'),
-            ins AS (
-              INSERT INTO qc.items
-                (station,line_id,product_code,roll_number,job_order_number,roll_width,detected_at,
-                item_status_id,ai_note)
-              SELECT
-                'ROLL', line.id, '13W10C2MB','462265','3D3G256048',185, now()-interval '2 hour',
-                (SELECT id FROM qc.item_statuses WHERE code='DEFECT'),
-                'Defect: บาร์โค้ด'
-              FROM line RETURNING id
-            )
-      INSERT INTO qc.item_defects(item_id, defect_type_id, meta)
-      SELECT ins.id,(SELECT id FROM qc.defect_types WHERE code='BARCODE'),
-              '{"source":"AI"}'::jsonb
-      FROM ins;
-
-      -- ROLL: SCRAP (AI ตรงๆ) + operator confirm
-      WITH line AS (SELECT id FROM qc.production_lines WHERE code='3'),
-      ins AS (
-        INSERT INTO qc.items
-          (station,line_id,product_code,roll_number,job_order_number,roll_width,detected_at,
-            item_status_id,ai_note,scrap_confirmed_by,scrap_confirmed_at)
-        SELECT 'ROLL', line.id, '13W10C2MB','451070','3D3G256045',270, now()-interval '3 hour',
-                (SELECT id FROM qc.item_statuses WHERE code='SCRAP'),
-                'Scrap (ไม่พบฉลาก)',
-                (SELECT id FROM "user".users WHERE username='op_3a'), now()
-        FROM line RETURNING id
-      )
-      INSERT INTO qc.item_events(item_id,actor_id,event_type,to_status_id,details)
-      SELECT id,(SELECT id FROM "user".users WHERE username='op_3a'),
-            'OPERATOR_CONFIRM_SCRAP',(SELECT id FROM qc.item_statuses WHERE code='SCRAP'),
-            '{"note":"AI scrap confirmed"}'::jsonb
-      FROM ins;
-
-      -- ROLL: SCRAP (ยังไม่ confirm)
-      WITH line AS (SELECT id FROM qc.production_lines WHERE code='3')
-      INSERT INTO qc.items
-        (station,line_id,product_code,roll_number,job_order_number,roll_width,detected_at,
-          item_status_id,ai_note)
-      SELECT 'ROLL', line.id, '13W10C2MB','451071','3D3G256049',275, now()-interval '4 hour',
-              (SELECT id FROM qc.item_statuses WHERE code='SCRAP'),
-              'Scrap (AI detected)' FROM line;
-
-      -- BUNDLE: DEFECT (LABEL)
-      WITH line AS (SELECT id FROM qc.production_lines WHERE code='4'),
-            ins AS (
-              INSERT INTO qc.items
-                (station,line_id,product_code,bundle_number,job_order_number,roll_width,detected_at,
-                item_status_id,ai_note)
-              SELECT
-                'BUNDLE', line.id, '22X90Y7AA','461182','4A9B128099',250, now()-interval '2 hour',
-                (SELECT id FROM qc.item_statuses WHERE code='DEFECT'),
-                'Defect: ฉลาก'
-              FROM line
-              RETURNING id
-            )
-      INSERT INTO qc.item_defects(item_id, defect_type_id, meta)
-      SELECT ins.id,(SELECT id FROM qc.defect_types WHERE code='LABEL'),
-              '{"note":"missing label"}'::jsonb
-      FROM ins;
-
-      -- BUNDLE: DEFECT (BARCODE)
-      WITH line AS (SELECT id FROM qc.production_lines WHERE code='4'),
-            ins AS (
-              INSERT INTO qc.items
-                (station,line_id,product_code,bundle_number,job_order_number,roll_width,detected_at,
-                item_status_id,ai_note)
-              SELECT
-                'BUNDLE', line.id, '22X90Y7AA','461183','4A9B128100',255, now()-interval '3 hour',
-                (SELECT id FROM qc.item_statuses WHERE code='DEFECT'),
-                'Defect: บาร์โค้ด'
-              FROM line
-              RETURNING id
-            )
-      INSERT INTO qc.item_defects(item_id, defect_type_id, meta)
-      SELECT ins.id,(SELECT id FROM qc.defect_types WHERE code='BARCODE'),
-              '{"note":"barcode unreadable"}'::jsonb
-      FROM ins;
-
-      -- ROLL: NORMAL
-      WITH line AS (SELECT id FROM qc.production_lines WHERE code='3')
-      INSERT INTO qc.items
-        (station,line_id,product_code,roll_number,job_order_number,roll_width,detected_at,
-          item_status_id,ai_note)
-      SELECT 'ROLL', line.id, '13W10C2MB','462266','3D3G256050',200, now()-interval '5 hour',
-              (SELECT id FROM qc.item_statuses WHERE code='NORMAL'),
-              'OK' FROM line;
-
-      -- ROLL: QC_PASSED
-      WITH line AS (SELECT id FROM qc.production_lines WHERE code='3')
-      INSERT INTO qc.items
-        (station,line_id,product_code,roll_number,job_order_number,roll_width,detected_at,
-          item_status_id,ai_note)
-      SELECT 'ROLL', line.id, '13W10C2MB','462267','3D3G256051',210, now()-interval '6 hour',
-              (SELECT id FROM qc.item_statuses WHERE code='QC_PASSED'),
-              'QC passed after recheck' FROM line;
       """)
 
 def downgrade() -> None:
