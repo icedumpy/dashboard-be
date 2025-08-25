@@ -4,7 +4,8 @@ from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
 from datetime import datetime
-
+from pathlib import PurePosixPath
+from app.core.config.config import settings
 
 from app.core.db.session import get_db
 from app.core.security.auth import get_current_user
@@ -101,7 +102,6 @@ async def list_items(
     # page
     rows = (await db.execute(q.offset(offset).limit(page_size))).scalars().all()
 
-    # counts (images/defects)
     data = []
     for it in rows:
         # eager load status & counts
@@ -372,5 +372,51 @@ async def mark_scrap(
 
     await db.commit()
     return {"ok": True, "review_id": review_id}
+
+def _norm(rel: Optional[str]) -> Optional[str]:
+    if not rel: return None
+    p = PurePosixPath(rel).as_posix().lstrip("/")
+    if ".." in p:  # safety
+        raise HTTPException(status_code=400, detail="Invalid image path")
+    return p
+
+@router.get("/{item_id}/images")
+async def list_item_images(
+    item_id: int,
+    kinds: Optional[str] = Query(None, description="CSV: DETECTED,FIX,OTHER"),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    # auth
+    require_role(user, ["VIEWER", "OPERATOR", "INSPECTOR"])
+    it = await db.get(Item, item_id)
+    if not it or getattr(it, "deleted_at", None):
+        raise HTTPException(status_code=404, detail="Item not found")
+    if user.role != "INSPECTOR":
+        require_same_line(user, it)
+
+    # query
+    q = select(ItemImage).where(ItemImage.item_id == item_id)
+    if kinds:
+        kind_list = [k.strip().upper() for k in kinds.split(",") if k.strip()]
+        q = q.where(ItemImage.kind.in_(kind_list))
+    rows = (await db.execute(q.order_by(ItemImage.uploaded_at.asc(), ItemImage.id.asc()))).scalars().all()
+
+    # response: FE can directly use url/thumb_url
+    data = []
+    image_dir = settings.IMAGES_DIR
+    for im in rows:
+        path = _norm(im.path)
+        tpath = _norm(getattr(im, "thumb_path", None)) if hasattr(im, "thumb_path") else None
+        data.append({
+            "id": im.id,
+            "kind": im.kind,
+            "created_at": im.uploaded_at,
+            "meta": im.meta,
+            "url": f"/{image_dir}/{path}" if path else None,
+            "thumb_url": f"/{image_dir}/{tpath}" if tpath else None,
+        })
+    return {"data": data}
+
 
 # ---------- PATCH /items/{id}/decision ----------

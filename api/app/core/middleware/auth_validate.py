@@ -11,6 +11,7 @@ EXEMPT_PREFIXES: tuple[str, ...] = (
     "/docs",
     "/redoc",
     "/api/openapi.json",
+    "/images"
 )
 
 def is_exempt(path: str, prefixes: Iterable[str]) -> bool:

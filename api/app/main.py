@@ -1,6 +1,8 @@
 # app/main.py
 from fastapi import FastAPI, Request
-
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
+from app.core.config.config import settings
 from fastapi.openapi.utils import get_openapi
 
 from app.core.middleware.auth_validate import jwt_middleware
@@ -29,7 +31,17 @@ app = FastAPI(
     swagger_ui_parameters={"persistAuthorization": True},
 )
 
-# ---- Register your JWT middleware (it should internally use is_exempt) ----
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+IMAGES_DIR = PROJECT_ROOT / "images"
+
+app.mount(f"/{settings.IMAGES_DIR}", StaticFiles(directory=str(IMAGES_DIR)), name="images")
+@app.middleware("http")
+async def add_cache_headers(request, call_next):
+    resp = await call_next(request)
+    if request.url.path.startswith(f"/{settings.IMAGES_DIR}/"):
+        resp.headers.setdefault("Cache-Control", "public, max-age=86400, immutable")
+    return resp
+
 app.middleware("http")(jwt_middleware)
 
 # ---- Routers ----

@@ -5,8 +5,11 @@ from app.core.db.repo.user.user_entity import User
 from app.core.db.repo.models import (
     Item
 )
+from pathlib import Path, PurePosixPath
+from app.core.config.config import settings
 from fastapi import Request
 
+IMAGES_DIR = settings.IMAGES_DIR
 
 def require_role(user: User, allowed: List[str]):
     if user.role not in allowed:
@@ -32,3 +35,15 @@ def precondition_if_unmodified_since(request: Request, last_updated_at: datetime
             raise HTTPException(status_code=412, detail="Precondition Failed")
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid If-Unmodified-Since")
+
+def safe_fs_path(relpath: str) -> Path:
+    """Normalize and ensure relpath resolves inside IMAGES_DIR."""
+    rel = PurePosixPath(relpath).as_posix().lstrip("/")
+    if ".." in rel:
+        raise HTTPException(status_code=400, detail="Invalid image path")
+    fs = (IMAGES_DIR / rel).resolve()
+    try:
+        fs.relative_to(IMAGES_DIR)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid image path")
+    return fs
