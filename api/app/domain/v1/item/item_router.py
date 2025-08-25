@@ -1,6 +1,6 @@
 # app/domain/v1/items_router.py
 from fastapi import APIRouter, Query, Depends, HTTPException, Request
-from typing import List, Optional
+from typing import List, Optional, Annotated
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
 from datetime import datetime
@@ -13,6 +13,9 @@ from app.core.db.repo.user.user_entity import User
 from app.core.db.repo.models import (
     Item, ItemStatus, ProductionLine, ItemDefect, DefectType,
     Review, ItemImage, ItemEvent
+)
+from app.core.db.repo.models import (
+    EStation,EItemStatusCode
 )
 from app.domain.v1.item.item_schema import FixRequestBody
 from app.utils.helper.helper import (
@@ -29,13 +32,10 @@ router = APIRouter()
 # ---------- GET /items ----------
 @router.get("", summary="List items")
 async def list_items(
-    request: Request,
     page: int = Query(1, ge=1, description="1-based page index"),
     page_size: int = Query(10, ge=1, le=100, description="items per page (max 100)"),
 
-    station: Optional[str] = Query(
-        None, pattern="^(ROLL|BUNDLE)$", description="filter by station"
-    ),
+    station: Annotated[Optional[EStation], Query(description="filter by station")] = None,
     line_id: Optional[str] = Query(None, description="e.g. 1 = Line 3, 2 = Line 4"),
     product_code: Optional[str] = Query(None, description="contains match"),
     number: Optional[str] = Query(None, description="roll_number or bundle_number (contains)"),
@@ -43,38 +43,24 @@ async def list_items(
     roll_width_min: Optional[float] = Query(None, ge=0),
     roll_width_max: Optional[float] = Query(None, ge=0),
 
-    # repeatable: ...?status=DEFECT&status=SCRAP
-    status: Optional[List[str]] = Query(
-        None, description="repeatable status codes"
-    ),
+    status: Annotated[list[EItemStatusCode] | None, Query(description="repeatable status codes")] = None,
 
-    time_preset: Optional[str] = Query(
-        None, pattern="^(today|yesterday|7d|30d|all)$"
-    ),
     detected_from: Optional[datetime] = Query(None, description="ISO8601"),
     detected_to: Optional[datetime] = Query(None, description="ISO8601"),
-
-    # repeatable include: ...?include=images&include=defects
-    include: Optional[List[str]] = Query(
-        None, description="optional includes: line,status,defects,images,reviews"
-    ),
-
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
+    
 ):
     require_role(user, ["VIEWER", "OPERATOR", "INSPECTOR"])
     page_size = max(1, min(page_size, 100))
     offset = (page - 1) * page_size
 
-    # base query (exclude soft-deleted)
     q = select(Item).where(Item.deleted_at.is_(None))
 
-    # joins needed for sorting & filters
     q = q.join(ItemStatus, Item.item_status_id == ItemStatus.id)
     if line_id:
         q = q.join(ProductionLine, Item.line_id == ProductionLine.id)
 
-    # filters
     if station: q = q.where(Item.station == station)
     if line_id: q = q.where(ProductionLine.id == line_id)
     if product_code: q = q.where(Item.product_code.ilike(f"%{product_code}%"))
@@ -86,7 +72,9 @@ async def list_items(
     if job_order_number: q = q.where(Item.job_order_number.ilike(f"%{job_order_number}%"))
     if roll_width_min is not None: q = q.where(Item.roll_width >= roll_width_min)
     if roll_width_max is not None: q = q.where(Item.roll_width <= roll_width_max)
-    if status: q = q.where(ItemStatus.code.in_(status))
+    if status: 
+        station_values = [s.value for s in (status or [])]
+        q = q.where(ItemStatus.code.in_(station_values))
 
     # time range
     if detected_from: q = q.where(text("qc.items.detected_at >= :df")).params(df=detected_from)

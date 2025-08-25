@@ -1,6 +1,6 @@
 # app/core/db/repo/qc/models.py
 from __future__ import annotations
-
+from enum import Enum
 from typing import Optional, List
 from sqlalchemy import (
     String, Boolean, ForeignKey, UniqueConstraint, Numeric, Text,
@@ -17,6 +17,31 @@ StationEnum      = PGEnum("ROLL", "BUNDLE", name="station",  create_type=False)
 ReviewTypeEnum   = PGEnum("DEFECT_FIX", "SCRAP_FROM_RECHECK", name="review_type",  create_type=False)
 ReviewStateEnum  = PGEnum("PENDING", "APPROVED", "REJECTED", name="review_state",  create_type=False)
 ImageKindEnum    = PGEnum("DETECTED", "FIX", "OTHER", name="image_kind",  create_type=False)
+
+class EStation(str, Enum):
+    ROLL = "ROLL"
+    BUNDLE = "BUNDLE"
+
+class EReviewType(str, Enum):
+    DEFECT_FIX = "DEFECT_FIX"
+    SCRAP_FROM_RECHECK = "SCRAP_FROM_RECHECK"
+
+class EReviewState(str, Enum):
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
+class EImageKind(str, Enum):
+    DETECTED = "DETECTED"
+    FIX = "FIX"
+    OTHER = "OTHER"
+class EItemStatusCode(str, Enum):
+    DEFECT = "DEFECT"
+    REJECTED = "REJECTED"
+    SCRAP = "SCRAP"
+    RECHECK = "RECHECK"
+    NORMAL = "NORMAL"
+    QC_PASSED = "QC_PASSED"
 
 # =========================
 # Master tables

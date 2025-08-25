@@ -9,7 +9,7 @@ from app.core.db.session import get_db
 from app.core.security.auth import get_current_user
 from app.core.db.repo.user.user_entity import User
 from app.core.db.repo.models import (
-    ItemStatus, Review, ItemEvent, Item, ItemDefect, DefectType
+    ItemStatus, Review, ItemEvent, Item, ItemDefect, DefectType,EReviewState
 )
 from app.domain.v1.review.review_schema import DecisionRequestBody
 from app.utils.helper.helper import (
@@ -25,7 +25,7 @@ async def list_reviews(
     page: int = Query(1, ge=1, description="1-based page index"),
     page_size: int = Query(10, ge=1, le=100, description="items per page (max 100)"),
     line_id: Optional[int] = Query(None, description="line id"),
-    review_state: Optional[str] = Query(None, description="PENDING | APPROVED | REJECTED"),
+    review_state: Optional[EReviewState] = Query(None, description="PENDING | APPROVED | REJECTED"),
     defect_type_id: Optional[int] = Query(None, description="defect type id"),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
