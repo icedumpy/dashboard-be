@@ -1,13 +1,15 @@
 from fastapi import HTTPException, Request
-from typing import List
-from datetime import datetime
-from app.core.db.repo.models import User
-from app.core.db.repo.models import (
-    Item
-)
+from typing import List, Optional
 from pathlib import Path, PurePosixPath
 from app.core.config.config import settings
 from fastapi import Request
+from datetime import datetime, timezone
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.db.repo.models import User, Item, ItemImage, ProductionLine
+
+
 
 IMAGES_DIR = settings.IMAGES_DIR
 
@@ -51,3 +53,66 @@ def safe_fs_path(relpath: str) -> Path:
         raise HTTPException(status_code=400, detail="Invalid image path")
 
     return fs
+
+
+def _subdir_for(kind: str) -> str:
+    k = (kind or "FIX").upper()
+    return "capture" if k == "DETECTED" else ("resolved" if k == "FIX" else "other")
+
+async def get_base_image_relpath(
+    db: AsyncSession,
+    *,
+    item_id: Optional[int],
+    kind: str = "FIX",
+) -> str:
+    """
+    Compute the base relative folder (under /images) to store images for an item.
+
+    Returns a POSIX relative path like:
+      '2025-08/21/line_3/roll/250814002D06/resolved'
+
+    Behavior:
+    - If the item has a previous DETECTED image, reuse its structure and replace the
+      last segment ('capture') with the appropriate subdir for `kind`.
+    - Otherwise, build from item fields (or date-only if item_id is None).
+    """
+    subdir = _subdir_for(kind)
+
+    it: Optional[Item] = None
+    line_code: Optional[str] = None
+
+    if item_id is not None:
+        it = await db.get(Item, item_id)
+        if not it:
+            item_id = None
+        else:
+            line_code = await db.scalar(
+                select(ProductionLine.code).where(ProductionLine.id == it.line_id)
+            ) or str(it.line_id)
+    if it is not None:
+        last_detected_path: Optional[str] = await db.scalar(
+            select(ItemImage.path)
+            .where(ItemImage.item_id == it.id, ItemImage.kind == "DETECTED")
+            .order_by(ItemImage.uploaded_at.desc(), ItemImage.id.desc())
+            .limit(1)
+        )
+        if last_detected_path:
+            # e.g. 2025-08/21/line_3/roll/250814002D06/capture/698878.jpg
+            p = PurePosixPath(last_detected_path)
+            base_dir = p.parent.parent / subdir
+            return base_dir.as_posix().lstrip("/")
+
+    now = (it.detected_at if it and it.detected_at else datetime.now(timezone.utc))
+    y_m = f"{now:%Y-%m}"
+    d = f"{now:%d}"
+
+    if it is not None:
+        station_dir = (it.station or "").lower() or "unknown"
+        number = it.roll_number or it.bundle_number or "unknown"
+        lc = f"line_{line_code}" if line_code else f"line_{it.line_id}"
+        base_dir = PurePosixPath(y_m) / d / lc / station_dir / str(number) / subdir
+    else:
+        # No item context
+        base_dir = PurePosixPath(y_m) / d / "unbound" / subdir
+
+    return base_dir.as_posix().lstrip("/")

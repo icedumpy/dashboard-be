@@ -1,5 +1,5 @@
 import shutil
-import os, mimetypes
+import mimetypes
 
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
 from fastapi.responses import FileResponse
@@ -9,14 +9,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from datetime import datetime
 from pathlib import Path
 
 from app.core.db.session import get_db
 from app.core.security.auth import get_current_user
 from app.core.db.repo.models import User
 from app.core.db.repo.models import Item, ItemImage
-from app.utils.helper.helper import require_role, safe_fs_path
+from app.utils.helper.helper import require_role, safe_fs_path, get_base_image_relpath
 
 router = APIRouter()
 
@@ -31,10 +30,12 @@ async def upload_images(
     if len(files) > 10:
         raise HTTPException(status_code=400, detail="Max 10 files")
     out = []
-    today = datetime.utcnow()
-    base = Path("./images") / f"{today:%Y-%m}" / f"{today:%d}"
+    
+    current_base_path = await get_base_image_relpath(db=db,item_id=item_id,kind=kind)
+    
+    base = Path("./images") / current_base_path
     base.mkdir(parents=True, exist_ok=True)
-
+    
     # Insert rows first to get ids (for row_number in filename)
     imgs = []
     for _ in files:

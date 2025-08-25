@@ -104,12 +104,6 @@ async def me(
 
     user, line, shift = row
 
-    if line is None:
-        print("line: None")
-    else:
-        print(f"line => id={line.id}, code={getattr(line, 'code', None)}, name={getattr(line, 'name', None)}")
-        
-        
     payload = {
         "id": user.id,
         "display_name": user.display_name,
