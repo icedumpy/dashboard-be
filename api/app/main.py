@@ -1,10 +1,11 @@
 # app/main.py
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
-from pathlib import Path
-from app.core.config.config import settings
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
+from pathlib import Path
 
+from app.core.config.config import settings
 from app.core.middleware.auth_validate import jwt_middleware
 from app.domain.v1.routers import router as v1_router
 
@@ -14,12 +15,9 @@ OPENAPI_PATH = "/api/openapi.json"
 DOCS_PATH = "/docs"
 REDOC_PATH = "/redoc"
 
-
-def get_bearer_token(request: Request) -> str | None:
-    auth = request.headers.get("Authorization")
-    if not auth or not auth.startswith("Bearer "):
-        return None
-    return auth.split(" ", 1)[1].strip() or None
+ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+]
 
 app = FastAPI(
     title=APP_TITLE,
@@ -27,22 +25,50 @@ app = FastAPI(
     openapi_url=OPENAPI_PATH,
     docs_url=DOCS_PATH,
     redoc_url=REDOC_PATH,
-    # keep the token in the UI so you don't have to re‑enter after refresh
     swagger_ui_parameters={"persistAuthorization": True},
 )
 
+# ---- Static images ----
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 IMAGES_DIR = PROJECT_ROOT / "images"
+IMAGES_PREFIX = f"/{settings.IMAGES_DIR}".rstrip("/")
 
-app.mount(f"/{settings.IMAGES_DIR}", StaticFiles(directory=str(IMAGES_DIR)), name="images")
+app.mount(IMAGES_PREFIX, StaticFiles(directory=str(IMAGES_DIR)), name="images")
+
+# ---- CORS (must be BEFORE auth) ----
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,      
+    allow_credentials=True,           
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "If-Match", "If-None-Match"],
+    expose_headers=["Content-Disposition", "ETag"],
+    max_age=86400,
+)
+
+# ---- Add cache headers for static images ----
 @app.middleware("http")
-async def add_cache_headers(request, call_next):
+async def add_cache_headers(request: Request, call_next):
     resp = await call_next(request)
-    if request.url.path.startswith(f"/{settings.IMAGES_DIR}/"):
+    if request.url.path.startswith(f"{IMAGES_PREFIX}/"):
         resp.headers.setdefault("Cache-Control", "public, max-age=86400, immutable")
     return resp
 
-app.middleware("http")(jwt_middleware)
+# ---- JWT middleware with bypass for OPTIONS & public paths ----
+@app.middleware("http")
+async def jwt_bypass_wrapper(request: Request, call_next):
+    # Allow CORS preflight
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    path = request.url.path
+    if (
+        path.startswith(DOCS_PATH)
+        or path.startswith(REDOC_PATH)
+        or path == OPENAPI_PATH
+        or path.startswith(f"{IMAGES_PREFIX}/")
+    ):
+        return await call_next(request)
+    return await jwt_middleware(request, call_next)
 
 # ---- Routers ----
 app.include_router(v1_router, prefix="/api/v1")
@@ -63,12 +89,8 @@ def custom_openapi():
         "scheme": "bearer",
         "bearerFormat": "JWT",
     }
-    # 👇 make bearer required by default for all operations
     schema["security"] = [{"bearerAuth": []}]
     app.openapi_schema = schema
     return app.openapi_schema
 
 app.openapi = custom_openapi
-
-# Helpful so Swagger keeps your token
-app.swagger_ui_parameters = {"persistAuthorization": True}
