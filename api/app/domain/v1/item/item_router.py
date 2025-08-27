@@ -16,6 +16,7 @@ from app.core.db.repo.models import (
     EStation,EItemStatusCode,User
 )
 from app.domain.v1.item.item_schema import FixRequestBody
+from app.domain.v1.item.item_service import resolve_shift_window, summarize_station
 from app.utils.helper.helper import (
     require_role,
     require_same_line,
@@ -152,6 +153,31 @@ async def list_items(
     # (optional "included" set can be added if `include` supplied)
     return resp
 
+@router.get("/summary", summary="Summary roll/bundle")
+async def get_item_detail(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    # shift window (Asia/Bangkok)
+    start_utc, end_utc, start_local, end_local = await resolve_shift_window(db, user)
+
+    # per-station summaries on user's line
+    roll = await summarize_station(db, line_id=user.line_id, station="ROLL", start_utc=start_utc, end_utc=end_utc)
+    bundle = await summarize_station(db, line_id=user.line_id, station="BUNDLE", start_utc=start_utc, end_utc=end_utc)
+
+    return {
+        "shift": {
+            "start_local": start_local.isoformat(),
+            "end_local": end_local.isoformat(),
+            "start_utc": start_utc.isoformat().replace("+00:00", "Z"),
+            "end_utc": end_utc.isoformat().replace("+00:00", "Z"),
+            "tz": "Asia/Bangkok",
+        },
+        "roll": roll,
+        "bundle": bundle,
+    }
+
+
 # ---------- GET /items/{id} ----------
 @router.get("/{item_id}")
 async def get_item_detail(
@@ -217,6 +243,7 @@ async def get_item_detail(
             } for rv in rws
         ]
     }
+
 
 # ---------- POST /items/{id}/fix-request ----------
 @router.post("/{item_id}/fix-request")
