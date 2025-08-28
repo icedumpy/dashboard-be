@@ -47,17 +47,17 @@ async def upload_images(
     # Save files with row_number (id)
     for f, im in zip(files, imgs):
         ext = (Path(f.filename).suffix or ".jpg").lower()
-        dest = base / f"{im.id}{ext}"  
+        dest = Path(base) / f"{im.id}{ext}"  
         with dest.open("wb") as w:
             shutil.copyfileobj(f.file, w)
-        im.path = str(dest)
+        im.path = current_base_path  + f"/{im.id}{ext}"  
         out.append({"id": im.id, "path": im.path, "kind": im.kind})
 
     await db.commit()
     return {"data": out}
 
 
-@router.get("/image/{image_path:path}")
+@router.get("/{image_path:path}")
 async def get_image(
     image_path: str,
     db: AsyncSession = Depends(get_db),
