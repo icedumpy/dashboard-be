@@ -91,8 +91,8 @@ async def me(
 ):
     stmt = (
         select(User, ProductionLine, Shift)
-        .join(ProductionLine, User.line_id == ProductionLine.id)
-        .join(Shift,        User.shift_id == Shift.id)
+        .outerjoin(ProductionLine, User.line_id == ProductionLine.id)
+        .outerjoin(Shift,        User.shift_id == Shift.id)
         .where(User.id == current.id)
         .limit(1)
     )
@@ -109,9 +109,7 @@ async def me(
         "display_name": user.display_name,
         "role": user.role,
         "is_active": user.is_active,
-        # include if your UserOut expects it:
         "username": user.username,
-        # nested objects only if present
         "line": None if line is None else {
             "id": line.id,
             "code": getattr(line, "code", None),
@@ -126,5 +124,5 @@ async def me(
         },
     }
 
-    return UserOut(**payload)  # FastAPI will validate/shape the response
+    return UserOut(**payload) 
 
