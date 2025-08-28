@@ -16,6 +16,7 @@ from app.core.db.repo.models import (
     EStation,EItemStatusCode,User
 )
 from app.domain.v1.item.item_schema import FixRequestBody
+from app.domain.v1.item.item_service import resolve_shift_window, summarize_station
 from app.utils.helper.helper import (
     require_role,
     require_same_line,
@@ -104,20 +105,22 @@ async def list_items(
         st = (await db.execute(select(ItemStatus.code).where(ItemStatus.id == it.item_status_id))).scalar()
 
         
-        roll_item = {}
         if it.station == EStation.BUNDLE:
             q = (
                 select(Item)
                 .where(
-                    Item.station == EStation.ROLL,                # match a ROLL item
-                    Item.roll_number == it.bundle_number,   # same number as bundle
-                    Item.line_id == it.line_id,             # same line
-                    Item.deleted_at.is_(None),              # exclude soft-deleted
+                    Item.station == EStation.ROLL,              
+                    Item.roll_number == it.bundle_number,
+                    Item.line_id == it.line_id,           
+                    Item.deleted_at.is_(None),             
                 )
-                .order_by(Item.detected_at.desc(), Item.id.desc())  # pick the latest deterministically
+                .order_by(Item.detected_at.desc(), Item.id.desc()) 
                 .limit(1)
             )
             roll_item = (await db.execute(q)).scalars().first()
+            it.product_code = roll_item.product_code
+            it.job_order_number = roll_item.job_order_number
+            it.roll_width = roll_item.roll_width
 
         data.append({
             "id": it.id,
@@ -128,6 +131,7 @@ async def list_items(
             "bundle_number": it.bundle_number,
             "job_order_number": it.job_order_number,
             "roll_width": float(it.roll_width) if it.roll_width is not None else None,
+            "roll_id": it.roll_id,
             "detected_at": it.detected_at.isoformat(),
             "status_code": st,
             "ai_note": it.ai_note,
@@ -137,7 +141,6 @@ async def list_items(
             "current_review_id": it.current_review_id,
             "images_count": imgs,
             "defects_count": defs,
-            "roll_data": roll_item
         })
 
     resp = {
@@ -151,6 +154,31 @@ async def list_items(
     }
     # (optional "included" set can be added if `include` supplied)
     return resp
+
+@router.get("/summary", summary="Summary roll/bundle")
+async def get_item_detail(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    # shift window (Asia/Bangkok)
+    start_utc, end_utc, start_local, end_local = await resolve_shift_window(db, user)
+
+    # per-station summaries on user's line
+    roll = await summarize_station(db, line_id=user.line_id, station="ROLL", start_utc=start_utc, end_utc=end_utc)
+    bundle = await summarize_station(db, line_id=user.line_id, station="BUNDLE", start_utc=start_utc, end_utc=end_utc)
+
+    return {
+        "shift": {
+            "start_local": start_local.isoformat(),
+            "end_local": end_local.isoformat(),
+            "start_utc": start_utc.isoformat().replace("+00:00", "Z"),
+            "end_utc": end_utc.isoformat().replace("+00:00", "Z"),
+            "tz": "Asia/Bangkok",
+        },
+        "roll": roll,
+        "bundle": bundle,
+    }
+
 
 # ---------- GET /items/{id} ----------
 @router.get("/{item_id}")
@@ -217,6 +245,7 @@ async def get_item_detail(
             } for rv in rws
         ]
     }
+
 
 # ---------- POST /items/{id}/fix-request ----------
 @router.post("/{item_id}/fix-request")
