@@ -105,20 +105,22 @@ async def list_items(
         st = (await db.execute(select(ItemStatus.code).where(ItemStatus.id == it.item_status_id))).scalar()
 
         
-        roll_item = {}
         if it.station == EStation.BUNDLE:
             q = (
                 select(Item)
                 .where(
-                    Item.station == EStation.ROLL,                # match a ROLL item
-                    Item.roll_number == it.bundle_number,   # same number as bundle
-                    Item.line_id == it.line_id,             # same line
-                    Item.deleted_at.is_(None),              # exclude soft-deleted
+                    Item.station == EStation.ROLL,              
+                    Item.roll_number == it.bundle_number,
+                    Item.line_id == it.line_id,           
+                    Item.deleted_at.is_(None),             
                 )
-                .order_by(Item.detected_at.desc(), Item.id.desc())  # pick the latest deterministically
+                .order_by(Item.detected_at.desc(), Item.id.desc()) 
                 .limit(1)
             )
             roll_item = (await db.execute(q)).scalars().first()
+            it.product_code = roll_item.product_code
+            it.job_order_number = roll_item.job_order_number
+            it.roll_width = roll_item.roll_width
 
         data.append({
             "id": it.id,
@@ -129,6 +131,7 @@ async def list_items(
             "bundle_number": it.bundle_number,
             "job_order_number": it.job_order_number,
             "roll_width": float(it.roll_width) if it.roll_width is not None else None,
+            "roll_id": it.roll_id,
             "detected_at": it.detected_at.isoformat(),
             "status_code": st,
             "ai_note": it.ai_note,
@@ -138,7 +141,6 @@ async def list_items(
             "current_review_id": it.current_review_id,
             "images_count": imgs,
             "defects_count": defs,
-            "roll_data": roll_item
         })
 
     resp = {

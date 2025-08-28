@@ -135,6 +135,7 @@ class Item(Base):
     bundle_number: Mapped[Optional[str]] = mapped_column(String)
     job_order_number: Mapped[Optional[str]] = mapped_column(String)
     roll_width: Mapped[Optional[float]] = mapped_column(Numeric(10, 2))
+    roll_id: Mapped[Optional[str]] = mapped_column(String)
 
     detected_at: Mapped[str] = mapped_column(DateTime(timezone=True), nullable=False)
     item_status_id: Mapped[int] = mapped_column(ForeignKey("qc.item_statuses.id"), nullable=False)
