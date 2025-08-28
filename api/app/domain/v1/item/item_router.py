@@ -37,7 +37,7 @@ async def list_items(
     page_size: int = Query(10, ge=1, le=100, description="items per page (max 100)"),
 
     station: Annotated[Optional[EStation], Query(description="filter by station")] = None,
-    line_id: Optional[str] = Query(None, description="e.g. 1 = Line 3, 2 = Line 4"),
+    line_id: Optional[int] = Query(None, description="e.g. 1 = Line 3, 2 = Line 4"),
     product_code: Optional[str] = Query(None, description="contains match"),
     number: Optional[str] = Query(None, description="roll_number or bundle_number (contains)"),
     job_order_number: Optional[str] = Query(None, description="contains match"),
