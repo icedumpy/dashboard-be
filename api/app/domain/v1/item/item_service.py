@@ -1,17 +1,10 @@
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, func, case, and_, exists
+from fastapi import APIRouter, HTTPException
+from sqlalchemy import select, func, case, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.db.repo.models import User
-from app.core.db.repo.models import Item, ItemStatus, Review
-# If you have a Shift model, import it; else this stays unused
-try:
-    from app.core.db.repo.models import Shift  # optional
-except Exception:  # pragma: no cover
-    Shift = None  # type: ignore
+from app.core.db.repo.models import Item, ItemStatus, Review, Shift, User
 
 router = APIRouter()
 
