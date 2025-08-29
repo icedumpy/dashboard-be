@@ -122,6 +122,12 @@ async def list_items(
             it.job_order_number = roll_item.job_order_number
             it.roll_width = roll_item.roll_width
 
+        is_pening_review = False
+
+        if it.current_review_id != None:
+            review_data = (await db.execute(select(Review).where(Review.id == it.current_review_id))).scalar()
+            is_pening_review = review_data.state == "PENDING"
+
         data.append({
             "id": it.id,
             "station": it.station,
@@ -139,6 +145,7 @@ async def list_items(
             "scrap_confirmed_by": it.scrap_confirmed_by,
             "scrap_confirmed_at": it.scrap_confirmed_at.isoformat() if it.scrap_confirmed_at else None,
             "current_review_id": it.current_review_id,
+            "is_pening_review": is_pening_review,
             "images_count": imgs,
             "defects_count": defs,
         })
@@ -265,6 +272,15 @@ async def submit_fix_request(
         require_same_shift_if_operator(user, it)
 
     precondition_if_unmodified_since(request, it.updated_at)
+
+    is_pening_review = False
+
+    if it.current_review_id != None:
+        review_data = (await db.execute(select(Review).where(Review.id == it.current_review_id))).scalar()
+        is_pening_review = review_data.state == "PENDING"
+    
+    if (is_pening_review == True):
+        raise HTTPException(status_code=400, detail="The fix request has been submitted")
 
     # status check
     st_code = (
