@@ -122,11 +122,11 @@ async def list_items(
             it.job_order_number = roll_item.job_order_number
             it.roll_width = roll_item.roll_width
 
-        is_pening_review = False
+        is_pending_review = False
 
         if it.current_review_id != None:
             review_data = (await db.execute(select(Review).where(Review.id == it.current_review_id))).scalar()
-            is_pening_review = review_data.state == "PENDING"
+            is_pending_review = review_data.state == "PENDING"
 
         data.append({
             "id": it.id,
@@ -145,7 +145,7 @@ async def list_items(
             "scrap_confirmed_by": it.scrap_confirmed_by,
             "scrap_confirmed_at": it.scrap_confirmed_at.isoformat() if it.scrap_confirmed_at else None,
             "current_review_id": it.current_review_id,
-            "is_pening_review": is_pening_review,
+            "is_pending_review": is_pending_review,
             "images_count": imgs,
             "defects_count": defs,
         })
