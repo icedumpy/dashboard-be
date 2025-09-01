@@ -17,6 +17,7 @@ REDOC_PATH = "/redoc"
 
 ALLOWED_ORIGINS = [
     "http://localhost:5173",
+    "http://localhost:4173",
 ]
 
 app = FastAPI(

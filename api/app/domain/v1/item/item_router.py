@@ -97,9 +97,15 @@ async def list_items(
         imgs = (await db.execute(
             select(text("count(*)")).select_from(ItemImage).where(ItemImage.item_id == it.id)
         )).scalar()
-        defs = (await db.execute(
-            select(text("count(*)")).select_from(ItemDefect).where(ItemDefect.item_id == it.id)
-        )).scalar()
+        item_defects = await db.execute(
+            select(DefectType.name_th).join(ItemDefect, DefectType.id == ItemDefect.defect_type_id).where(ItemDefect.item_id == it.id)
+        )
+        defs = item_defects.unique().scalars().all()
+        # defs = (await db.execute(
+        #     select(DefectType.code, ItemDefect.meta)
+        #     .join(ItemDefect, DefectType.id == ItemDefect.defect_type_id)
+        #     .where(ItemDefect.item_id == it.id)
+        # )).all()
 
         # get status code
         st = (await db.execute(select(ItemStatus.code).where(ItemStatus.id == it.item_status_id))).scalar()
@@ -140,14 +146,13 @@ async def list_items(
             "roll_id": it.roll_id,
             "detected_at": it.detected_at.isoformat(),
             "status_code": st,
-            "ai_note": it.ai_note,
             "scrap_requires_qc": it.scrap_requires_qc,
             "scrap_confirmed_by": it.scrap_confirmed_by,
             "scrap_confirmed_at": it.scrap_confirmed_at.isoformat() if it.scrap_confirmed_at else None,
             "current_review_id": it.current_review_id,
             "is_pending_review": is_pending_review,
-            "images_count": imgs,
-            "defects_count": defs,
+            "images": imgs,
+            "defects": defs,
         })
 
     resp = {
