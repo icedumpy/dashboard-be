@@ -124,9 +124,9 @@ async def list_items(
                 .limit(1)
             )
             roll_item = (await db.execute(q)).scalars().first()
-            it.product_code = roll_item.product_code
-            it.job_order_number = roll_item.job_order_number
-            it.roll_width = roll_item.roll_width
+            it.product_code = roll_item.product_code if roll_item is not None else None
+            it.job_order_number = roll_item.job_order_number if roll_item is not None else None
+            it.roll_width = roll_item.roll_width if roll_item is not None else None
 
         is_pending_review = False
 
