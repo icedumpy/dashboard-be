@@ -37,7 +37,7 @@ async def list_items(
     page_size: int = Query(10, ge=1, le=100, description="items per page (max 100)"),
 
     station: Annotated[Optional[EStation], Query(description="filter by station")] = None,
-    line_id: Optional[str] = Query(None, description="e.g. 1 = Line 3, 2 = Line 4"),
+    line_id: Optional[int] = Query(None, description="e.g. 1 = Line 3, 2 = Line 4"),
     product_code: Optional[str] = Query(None, description="contains match"),
     number: Optional[str] = Query(None, description="roll_number or bundle_number (contains)"),
     job_order_number: Optional[str] = Query(None, description="contains match"),
@@ -97,9 +97,15 @@ async def list_items(
         imgs = (await db.execute(
             select(text("count(*)")).select_from(ItemImage).where(ItemImage.item_id == it.id)
         )).scalar()
-        defs = (await db.execute(
-            select(text("count(*)")).select_from(ItemDefect).where(ItemDefect.item_id == it.id)
-        )).scalar()
+        item_defects = await db.execute(
+            select(DefectType.name_th).join(ItemDefect, DefectType.id == ItemDefect.defect_type_id).where(ItemDefect.item_id == it.id)
+        )
+        defs = item_defects.unique().scalars().all()
+        # defs = (await db.execute(
+        #     select(DefectType.code, ItemDefect.meta)
+        #     .join(ItemDefect, DefectType.id == ItemDefect.defect_type_id)
+        #     .where(ItemDefect.item_id == it.id)
+        # )).all()
 
         # get status code
         st = (await db.execute(select(ItemStatus.code).where(ItemStatus.id == it.item_status_id))).scalar()
@@ -122,6 +128,12 @@ async def list_items(
             it.job_order_number = roll_item.job_order_number
             it.roll_width = roll_item.roll_width
 
+        is_pending_review = False
+
+        if it.current_review_id != None:
+            review_data = (await db.execute(select(Review).where(Review.id == it.current_review_id))).scalar()
+            is_pending_review = review_data.state == "PENDING"
+
         data.append({
             "id": it.id,
             "station": it.station,
@@ -134,13 +146,13 @@ async def list_items(
             "roll_id": it.roll_id,
             "detected_at": it.detected_at.isoformat(),
             "status_code": st,
-            "ai_note": it.ai_note,
             "scrap_requires_qc": it.scrap_requires_qc,
             "scrap_confirmed_by": it.scrap_confirmed_by,
             "scrap_confirmed_at": it.scrap_confirmed_at.isoformat() if it.scrap_confirmed_at else None,
             "current_review_id": it.current_review_id,
-            "images_count": imgs,
-            "defects_count": defs,
+            "is_pending_review": is_pending_review,
+            "images": imgs,
+            "defects": defs,
         })
 
     resp = {
@@ -265,6 +277,15 @@ async def submit_fix_request(
         require_same_shift_if_operator(user, it)
 
     precondition_if_unmodified_since(request, it.updated_at)
+
+    is_pening_review = False
+
+    if it.current_review_id != None:
+        review_data = (await db.execute(select(Review).where(Review.id == it.current_review_id))).scalar()
+        is_pening_review = review_data.state == "PENDING"
+    
+    if (is_pening_review == True):
+        raise HTTPException(status_code=400, detail="The fix request has been submitted")
 
     # status check
     st_code = (

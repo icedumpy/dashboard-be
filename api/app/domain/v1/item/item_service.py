@@ -49,9 +49,6 @@ async def summarize_station(db: AsyncSession, line_id: int, station: str, start_
     scrap = SCRAP + RECHECK
     pending_* = items in that status with an existing pending review (any type)
     """
-    if not line_id:
-        raise HTTPException(status_code=400, detail="User has no line_id")
-
     pending_exists = (
         select(Review.id)
         .where(Review.item_id == Item.id, Review.state == "PENDING")
@@ -74,7 +71,7 @@ async def summarize_station(db: AsyncSession, line_id: int, station: str, start_
         .join(ItemStatus, ItemStatus.id == Item.item_status_id)
         .where(
             Item.deleted_at.is_(None),
-            Item.line_id == line_id,
+            Item.line_id == line_id if line_id != None else True,
             Item.station == station, 
             # Item.detected_at >= start_utc,
             # Item.detected_at < end_utc,
