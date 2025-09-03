@@ -25,9 +25,9 @@ services:
     container_name: qc_api
     env_file:
       - .env
-    depends_on:
-      db:
-        condition: service_healthy
+    # depends_on:
+    #   db:
+    #     condition: service_healthy
     ports:
       - "${APP_PORT}:8000"
     volumes:
