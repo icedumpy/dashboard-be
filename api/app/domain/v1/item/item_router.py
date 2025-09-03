@@ -169,15 +169,14 @@ async def list_items(
 
 @router.get("/summary", summary="Summary roll/bundle")
 async def get_item_detail(
+    line_id: int = Query(None, description="e.g. 1 = Line 3, 2 = Line 4"),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    # shift window (Asia/Bangkok)
     start_utc, end_utc, start_local, end_local = await resolve_shift_window(db, user)
 
-    # per-station summaries on user's line
-    roll = await summarize_station(db, line_id=user.line_id, station="ROLL", start_utc=start_utc, end_utc=end_utc)
-    bundle = await summarize_station(db, line_id=user.line_id, station="BUNDLE", start_utc=start_utc, end_utc=end_utc)
+    roll = await summarize_station(db, line_id=line_id, station="ROLL", start_utc=start_utc, end_utc=end_utc)
+    bundle = await summarize_station(db, line_id=line_id, station="BUNDLE", start_utc=start_utc, end_utc=end_utc)
 
     return {
         "shift": {
