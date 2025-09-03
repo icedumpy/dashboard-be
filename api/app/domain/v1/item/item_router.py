@@ -174,9 +174,11 @@ async def get_item_detail(
     user: User = Depends(get_current_user),
 ):
     start_utc, end_utc, start_local, end_local = await resolve_shift_window(db, user)
+    
+    _line_id = line_id if line_id is not None else user.line_id
 
-    roll = await summarize_station(db, line_id=line_id, station="ROLL", start_utc=start_utc, end_utc=end_utc)
-    bundle = await summarize_station(db, line_id=line_id, station="BUNDLE", start_utc=start_utc, end_utc=end_utc)
+    roll = await summarize_station(db, line_id=_line_id, station="ROLL", start_utc=start_utc, end_utc=end_utc)
+    bundle = await summarize_station(db, line_id=_line_id, station="BUNDLE", start_utc=start_utc, end_utc=end_utc)
 
     return {
         "shift": {
