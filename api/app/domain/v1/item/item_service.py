@@ -61,7 +61,7 @@ async def summarize_station(db: AsyncSession, line_id: int, station: str, start_
             func.sum(case((ItemStatus.code == "DEFECT", 1), else_=0)).label("defects"),
             func.sum(case((ItemStatus.code.in_(("SCRAP", "RECHECK")), 1), else_=0)).label("scrap"),
             func.sum(
-                case((and_(ItemStatus.code == "DEFECT", pending_exists), 1), else_=0)
+                case((and_(ItemStatus.code.in_(("DEFECT", "REJECTED")), pending_exists), 1), else_=0)
             ).label("pending_defect"),
             func.sum(
                 case((and_(ItemStatus.code.in_(("SCRAP", "RECHECK")), pending_exists), 1), else_=0)
