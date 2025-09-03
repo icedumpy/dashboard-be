@@ -227,6 +227,28 @@ async def get_item_detail(
     rws = (await db.execute(
         select(Review).where(Review.item_id == it.id).order_by(Review.submitted_at.desc())
     )).scalars().all()
+    # ---- fetch user details for submitted_by / reviewed_by in one go ----
+    user_ids = {
+        *[rv.submitted_by for rv in rws if rv.submitted_by is not None],
+        *[rv.reviewed_by for rv in rws if rv.reviewed_by is not None],
+    }
+
+    user_map: dict[int, dict] = {}
+    if user_ids:
+        users = (await db.execute(select(User).where(User.id.in_(user_ids)))).scalars().all()
+        user_map = {
+            u.id: {
+                "id": u.id,
+                "username": getattr(u, "username", None),
+                "display_name": (
+                    getattr(u, "display_name", None)
+                    or getattr(u, "name", None)
+                    or getattr(u, "full_name", None)
+                ),
+                "role": getattr(u, "role", None),
+            }
+            for u in users
+        }
 
     return {
         "data": {
@@ -252,7 +274,9 @@ async def get_item_detail(
             {
                 "id": rv.id, "review_type": rv.review_type, "state": rv.state,
                 "submitted_by": rv.submitted_by, "submitted_at": rv.submitted_at.isoformat(),
+                "submitted_by_user": user_map.get(rv.submitted_by),
                 "reviewed_by": rv.reviewed_by, "reviewed_at": rv.reviewed_at.isoformat() if rv.reviewed_at else None,
+                "reviewed_by_user": user_map.get(rv.reviewed_by),
                 "submit_note": rv.submit_note, "review_note": rv.review_note, "reject_reason": rv.reject_reason
             } for rv in rws
         ]
