@@ -80,15 +80,10 @@ async def get_image(
         raise HTTPException(status_code=404, detail="Image not found")
 
     img: ItemImage = found[0]
-    owner_line_id: int = found[1]
 
     # Optional soft-delete guard
     if getattr(img, "deleted_at", None):
         raise HTTPException(status_code=404, detail="Image not found")
-
-    # Same-line rule (INSPECTOR can view all)
-    if user.role != "INSPECTOR" and user.line_id != owner_line_id:
-        raise HTTPException(status_code=403, detail="Cross-line view not allowed")
 
     # Resolve and serve file
     fs_path = safe_fs_path(image_path)
