@@ -16,7 +16,7 @@ from app.core.db.repo.models import (
     EStation,EItemStatusCode,User
 )
 from app.domain.v1.item.item_schema import FixRequestBody
-from app.domain.v1.item.item_service import resolve_shift_window, summarize_station
+from app.domain.v1.item.item_service import resolve_shift_window, summarize_station, build_item_filters
 from app.utils.helper.helper import (
     require_role,
     require_same_line,
@@ -77,23 +77,31 @@ async def list_items(
         station_values = [s.value for s in (status or [])]
         q = q.where(ItemStatus.code.in_(station_values))
 
-    # time range
     if detected_from: q = q.where(text("qc.items.detected_at >= :df")).params(df=detected_from)
     if detected_to: q = q.where(text("qc.items.detected_at <= :dt")).params(dt=detected_to)
-    # (time_preset handling omitted here for brevity—map to df/dt)
 
-    # sorting
     q = q.order_by(ItemStatus.display_order.asc(), Item.detected_at.desc(), Item.id.desc())
 
-    # total
     total = (await db.execute(q.with_only_columns(text("count(*)")).order_by(None))).scalar()
 
-    # page
     rows = (await db.execute(q.offset(offset).limit(page_size))).scalars().all()
+    
+    summary = await summarize_station(
+        db,
+        line_id=line_id,
+        station=station,
+        product_code=product_code,
+        number=number,
+        job_order_number=job_order_number,
+        roll_width_min=roll_width_min,
+        roll_width_max=roll_width_max,
+        status=status,
+        detected_from=detected_from,
+        detected_to=detected_to,
+    )
 
     data = []
     for it in rows:
-        # eager load status & counts
         imgs = (await db.execute(
             select(text("count(*)")).select_from(ItemImage).where(ItemImage.item_id == it.id)
         )).scalar()
@@ -101,13 +109,7 @@ async def list_items(
             select(DefectType.name_th).join(ItemDefect, DefectType.id == ItemDefect.defect_type_id).where(ItemDefect.item_id == it.id)
         )
         defs = item_defects.unique().scalars().all()
-        # defs = (await db.execute(
-        #     select(DefectType.code, ItemDefect.meta)
-        #     .join(ItemDefect, DefectType.id == ItemDefect.defect_type_id)
-        #     .where(ItemDefect.item_id == it.id)
-        # )).all()
-
-        # get status code
+        
         st = (await db.execute(select(ItemStatus.code).where(ItemStatus.id == it.item_status_id))).scalar()
 
         
@@ -157,6 +159,7 @@ async def list_items(
 
     resp = {
         "data": data,
+        "summary": summary,
         "pagination": {
             "page": page, 
             "page_size": page_size,
@@ -167,30 +170,30 @@ async def list_items(
     # (optional "included" set can be added if `include` supplied)
     return resp
 
-@router.get("/summary", summary="Summary roll/bundle")
-async def get_item_detail(
-    line_id: int = Query(None, description="e.g. 1 = Line 3, 2 = Line 4"),
-    db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    start_utc, end_utc, start_local, end_local = await resolve_shift_window(db, user)
+
+
+# @router.get("/summary", summary="Summary roll/bundle")
+# async def get_item_detail(
+#     line_id: int = Query(None, description="e.g. 1 = Line 3, 2 = Line 4"),
+#     db: AsyncSession = Depends(get_db),
+#     user: User = Depends(get_current_user),
+# ):
+#     start_utc, end_utc = await resolve_shift_window(db, user)
     
-    _line_id = line_id if line_id is not None else user.line_id
+#     _line_id = line_id if line_id is not None else user.line_id
 
-    roll = await summarize_station(db, line_id=_line_id, station="ROLL", start_utc=start_utc, end_utc=end_utc)
-    bundle = await summarize_station(db, line_id=_line_id, station="BUNDLE", start_utc=start_utc, end_utc=end_utc)
+#     # roll = await summarize_station(db, line_id=_line_id, station="ROLL", start_utc=start_utc, end_utc=end_utc)
+#     # bundle = await summarize_station(db, line_id=_line_id, station="BUNDLE", start_utc=start_utc, end_utc=end_utc)
 
-    return {
-        "shift": {
-            "start_local": start_local.isoformat(),
-            "end_local": end_local.isoformat(),
-            "start_utc": start_utc.isoformat().replace("+00:00", "Z"),
-            "end_utc": end_utc.isoformat().replace("+00:00", "Z"),
-            "tz": "Asia/Bangkok",
-        },
-        "roll": roll,
-        "bundle": bundle,
-    }
+#     return {
+#         "shift": {
+#             "start_utc": start_utc.isoformat().replace("+00:00", "Z"),
+#             "end_utc": end_utc.isoformat().replace("+00:00", "Z"),
+#             "tz": "Asia/Bangkok",
+#         },
+#         "roll": {},
+#         "bundle": {},
+#     }
 
 
 # ---------- GET /items/{id} ----------
