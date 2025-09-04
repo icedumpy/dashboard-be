@@ -40,30 +40,29 @@ async def list_reviews(
         .join(Item, Item.id == Review.item_id)
         .join(ItemStatus, Item.item_status_id == ItemStatus.id)
     )
+    
+    sum_base = (
+        select(Review.state, func.count(distinct(Review.id)).label("cnt"))
+        .join(Item, Item.id == Review.item_id)
+    )
+    
     if review_state:
         review_states = [s.value for s in (review_state or [])]
         base = base.where(Review.state.in_(review_states))
     if line_id:
         base = base.where(Item.line_id == line_id)
+        sum_base = sum_base.where(Item.line_id == line_id)
     if defect_type_id:
         base = base.join(ItemDefect, ItemDefect.item_id == Item.id).where(
             ItemDefect.defect_type_id == defect_type_id
         )
 
     # ----- total count (distinct reviews) -----
-    total = (
-        await db.execute(
-            select(func.count(distinct(Review.id))).select_from(base.subquery())
-        )
-    ).scalar_one()
-    
-    sum_base = (
-        select(Review.state, func.count(distinct(Review.id)).label("cnt"))
-        .join(Item, Item.id == Review.item_id)
+    subq = base.distinct().subquery()
+    total = await db.scalar(
+        select(func.count()).select_from(subq)   # COUNT(*) over the distinct ids
     )
-    if line_id:
-        sum_base = sum_base.where(Item.line_id == line_id)
-        
+    
     sum_base = sum_base.group_by(Review.state)
 
     sum_rows = (await db.execute(sum_base)).all()
