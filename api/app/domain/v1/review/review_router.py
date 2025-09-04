@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Query, Depends, HTTPException, Request
-from typing import List, Optional
+from typing import List, Optional, Annotated
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, distinct
 from datetime import datetime
@@ -24,7 +24,7 @@ async def list_reviews(
     page: int = Query(1, ge=1, description="1-based page index"),
     page_size: int = Query(10, ge=1, le=100, description="items per page (max 100)"),
     line_id: Optional[int] = Query(None, description="line id"),
-    review_state: Optional[EReviewState] = Query(None, description="PENDING | APPROVED | REJECTED"),
+    review_state: Annotated[list[EReviewState] | None, Query(description="PENDING | APPROVED | REJECTED")] = None,
     defect_type_id: Optional[int] = Query(None, description="defect type id"),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
@@ -41,7 +41,8 @@ async def list_reviews(
         .join(ItemStatus, Item.item_status_id == ItemStatus.id)
     )
     if review_state:
-        base = base.where(Review.state == review_state)
+        review_states = [s.value for s in (review_state or [])]
+        base = base.where(Review.state.in_(review_states))
     if line_id:
         base = base.where(Item.line_id == line_id)
     if defect_type_id:
@@ -55,6 +56,24 @@ async def list_reviews(
             select(func.count(distinct(Review.id))).select_from(base.subquery())
         )
     ).scalar_one()
+    
+    sum_base = (
+        select(Review.state, func.count(distinct(Review.id)).label("cnt"))
+        .join(Item, Item.id == Review.item_id)
+    )
+    if line_id:
+        sum_base = sum_base.where(Item.line_id == line_id)
+        
+    sum_base = sum_base.group_by(Review.state)
+
+    sum_rows = (await db.execute(sum_base)).all()
+    sum_map = {row.state: row.cnt for row in sum_rows}
+    summary = {
+        "pending": int(sum_map.get("PENDING", 0)),
+        "approved": int(sum_map.get("APPROVED", 0)),
+        "rejected": int(sum_map.get("REJECTED", 0)),
+        "total": int(sum(sum_map.values())),
+    }
 
     # ----- fetch paginated review ids in desired order -----
     ordered = base.order_by(
@@ -67,6 +86,7 @@ async def list_reviews(
     if not review_ids:
         return {
             "data": [],
+            "summary": summary,
             "pagination": {
                 "page": page,
                 "page_size": page_size,
@@ -169,6 +189,7 @@ async def list_reviews(
 
     return {
         "data": data,
+        "summary": summary,
         "pagination": {
             "page": page,
             "page_size": page_size,
