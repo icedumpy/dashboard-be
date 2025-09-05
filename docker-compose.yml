@@ -1,22 +1,20 @@
-version: "3.9"
-
 services:
-  db:
-    image: postgres:16-alpine
-    container_name: qc_db
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    ports:
-      - "${POSTGRES_PORT}:5432"
-    volumes:
-      - fitesa_db_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
+  # db:
+  #   image: postgres:16-alpine
+  #   container_name: qc_db
+  #   environment:
+  #     POSTGRES_DB: ${POSTGRES_DB}
+  #     POSTGRES_USER: ${POSTGRES_USER}
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  #   ports:
+  #     - "${POSTGRES_PORT}:5432"
+  #   volumes:
+  #     - fitesa_db_data:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+  #     interval: 5s
+  #     timeout: 5s
+  #     retries: 20
 
   api:
     build:
@@ -25,9 +23,9 @@ services:
     container_name: qc_api
     env_file:
       - .env
-    depends_on:
-      db:
-        condition: service_healthy
+    # depends_on:
+    #   db:
+    #     condition: service_healthy
     ports:
       - "${APP_PORT}:8000"
     volumes:
@@ -36,7 +34,7 @@ services:
       [
         "bash","-lc",
         "alembic -c /app/alembic.ini upgrade head && \
-        uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+        uvicorn app.main:app --host 0.0.0.0 --port 8000"
       ]
     restart: on-failure
 
