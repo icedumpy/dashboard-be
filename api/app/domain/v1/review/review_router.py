@@ -15,6 +15,9 @@ from app.domain.v1.review.review_schema import DecisionRequestBody
 from app.utils.helper.helper import (
     require_role,
 )
+from zoneinfo import ZoneInfo
+
+TH = ZoneInfo("Asia/Bangkok")
 
 router = APIRouter()
 
@@ -243,9 +246,8 @@ async def decide_fix(
 
     if decision not in ("APPROVED", "REJECTED"):
         raise HTTPException(status_code=400, detail="Invalid decision")
-
     rv.reviewed_by = user.id
-    rv.reviewed_at = datetime.utcnow()
+    rv.reviewed_at = datetime.now(TH)
 
     if decision == "APPROVED":
         rv.state = "APPROVED"
