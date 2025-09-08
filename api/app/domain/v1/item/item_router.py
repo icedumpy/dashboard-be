@@ -1,6 +1,6 @@
 # app/domain/v1/items_router.py
-from fastapi import APIRouter, Query, Depends, HTTPException, Request
-from typing import Optional, Annotated
+from fastapi import APIRouter, Query, Depends, HTTPException, Request, status
+from typing import Optional, Annotated, List
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_, and_, literal, text
 from datetime import datetime
@@ -8,13 +8,12 @@ from app.core.config.config import settings
 from io import StringIO
 from app.core.db.session import get_db
 from app.core.security.auth import get_current_user
-from app.domain.v1.item.item_schema import ItemReportRequest
 from app.core.db.repo.models import (
     Item, ItemStatus, ProductionLine, ItemDefect, DefectType,
     Review, ItemImage, ItemEvent,
     EStation,EItemStatusCode,User
 )
-from app.domain.v1.item.item_schema import FixRequestBody, UpdateItemStatusBody
+from app.domain.v1.item.item_schema import FixRequestBody, UpdateItemStatusBody, ItemReportRequest, ItemEventOut, ActorOut
 from app.domain.v1.item.item_service import summarize_station, operator_change_status_no_audit, norm
 from app.utils.helper.helper import (
     require_role,
@@ -168,7 +167,6 @@ async def list_items(
     }
     return resp
 
-# ---------- GET /items/{id} ----------
 @router.get("/{item_id}")
 async def get_item_detail(
     item_id: int,
@@ -253,6 +251,60 @@ async def get_item_detail(
             } for rv in rws
         ]
     }
+
+@router.get("/{item_id}/history", response_model=List[ItemEventOut])
+async def get_item_history(
+    item_id: int,
+    db: AsyncSession = Depends(get_db),
+    user = Depends(get_current_user),
+):
+    FromS = aliased(ItemStatus)
+    ToS = aliased(ItemStatus)
+
+    q = (
+        select(
+            ItemEvent.id,
+            ItemEvent.event_type,
+            ItemEvent.actor_id,
+            ItemEvent.details,
+            ItemEvent.from_status_id,
+            FromS.code.label("from_status_code"),
+            ItemEvent.to_status_id,
+            ToS.code.label("to_status_code"),
+            ItemEvent.created_at,
+            User.id.label("user_id"),
+            User.username,
+            User.display_name,
+        )
+        .outerjoin(FromS, FromS.id == ItemEvent.from_status_id)
+        .outerjoin(ToS, ToS.id == ItemEvent.to_status_id)
+        .outerjoin(User, User.id == ItemEvent.actor_id) 
+        .where(ItemEvent.item_id == item_id)
+        .order_by(ItemEvent.created_at.desc(), ItemEvent.id.desc())
+    )
+
+    rows = (await db.execute(q)).all()
+    if not rows:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="No events found for this item")
+
+    return [
+        ItemEventOut(
+            id=r.id,
+            event_type=r.event_type,
+            from_status_id=r.from_status_id,
+            from_status_code=r.from_status_code,
+            to_status_id=r.to_status_id,
+            to_status_code=r.to_status_code,
+            created_at=r.created_at.isoformat() if hasattr(r.created_at, "isoformat") else str(r.created_at),
+            actor=ActorOut(                
+                id=r.user_id,
+                username=r.username,
+                display_name=r.display_name,
+            ),
+        )
+        for r in rows
+    ]
+
 
 @router.patch("/{item_id}/status")
 async def change_item_status(
@@ -432,8 +484,6 @@ async def mark_scrap(
     await db.commit()
     return {"ok": True, "review_id": review_id}
 
-
-
 @router.get("/{item_id}/images")
 async def list_item_images(
     item_id: int,
@@ -463,7 +513,6 @@ async def list_item_images(
             "url": f"/{image_dir}/{path}" if path else None,
         })
     return {"data": data}
-
 
 @router.post("/report", summary="Download CSV report")
 async def get_csv_item_report(
