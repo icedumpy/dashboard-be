@@ -179,6 +179,14 @@ async def operator_change_status_no_audit(
         is_normal_like = current_code in ("NORMAL", "QC_PASSED") 
         going_to_defect = (target_code == "DEFECT")
         from_status_id = item.item_status_id
+        
+        if target_code == current_code:
+            raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    f"Item is already set to {target_code}"
+                )
+        
+        
 
         if is_normal_like and going_to_defect:
             if not defect_type_ids or len(defect_type_ids) == 0:

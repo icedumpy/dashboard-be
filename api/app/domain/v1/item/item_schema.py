@@ -26,6 +26,8 @@ class UpdateItemStatusBody(BaseModel):
         None,
         description="Required when changing NORMAL -> DEFECT. Replaces existing defects if provided."
     )
+    meta: Optional[Dict[str, Any]] = None 
+
 class FixRequestBody(BaseModel):
     image_ids: List[int] = Field(..., example=[1])
     note: Optional[str] = Field(None, example="Fixed defect using patching method")
