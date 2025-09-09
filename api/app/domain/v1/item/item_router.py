@@ -1,22 +1,20 @@
 # app/domain/v1/items_router.py
-from fastapi import APIRouter, Query, Depends, HTTPException, Request
-from typing import Optional, Annotated
+from fastapi import APIRouter, Query, Depends, HTTPException, Request, status
+from typing import Optional, Annotated, List
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_, and_, literal, text
 from datetime import datetime
-from pathlib import PurePosixPath
 from app.core.config.config import settings
 from io import StringIO
 from app.core.db.session import get_db
 from app.core.security.auth import get_current_user
-from app.domain.v1.item.item_schema import ItemReportRequest
 from app.core.db.repo.models import (
     Item, ItemStatus, ProductionLine, ItemDefect, DefectType,
     Review, ItemImage, ItemEvent,
     EStation,EItemStatusCode,User
 )
-from app.domain.v1.item.item_schema import FixRequestBody
-from app.domain.v1.item.item_service import resolve_shift_window, summarize_station, build_item_filters
+from app.domain.v1.item.item_schema import FixRequestBody, UpdateItemStatusBody, ItemReportRequest, ItemEventOut, ActorOut
+from app.domain.v1.item.item_service import summarize_station, operator_change_status_no_audit, norm
 from app.utils.helper.helper import (
     require_role,
     require_same_line,
@@ -167,36 +165,8 @@ async def list_items(
             "total_pages": (total + page_size - 1) // page_size
         }
     }
-    # (optional "included" set can be added if `include` supplied)
     return resp
 
-
-
-# @router.get("/summary", summary="Summary roll/bundle")
-# async def get_item_detail(
-#     line_id: int = Query(None, description="e.g. 1 = Line 3, 2 = Line 4"),
-#     db: AsyncSession = Depends(get_db),
-#     user: User = Depends(get_current_user),
-# ):
-#     start_utc, end_utc = await resolve_shift_window(db, user)
-    
-#     _line_id = line_id if line_id is not None else user.line_id
-
-#     # roll = await summarize_station(db, line_id=_line_id, station="ROLL", start_utc=start_utc, end_utc=end_utc)
-#     # bundle = await summarize_station(db, line_id=_line_id, station="BUNDLE", start_utc=start_utc, end_utc=end_utc)
-
-#     return {
-#         "shift": {
-#             "start_utc": start_utc.isoformat().replace("+00:00", "Z"),
-#             "end_utc": end_utc.isoformat().replace("+00:00", "Z"),
-#             "tz": "Asia/Bangkok",
-#         },
-#         "roll": {},
-#         "bundle": {},
-#     }
-
-
-# ---------- GET /items/{id} ----------
 @router.get("/{item_id}")
 async def get_item_detail(
     item_id: int,
@@ -210,14 +180,12 @@ async def get_item_detail(
 
     st = (await db.execute(select(ItemStatus.code).where(ItemStatus.id == it.item_status_id))).scalar()
 
-    # defects
     defs = (await db.execute(
         select(DefectType.code, ItemDefect.meta)
         .join(ItemDefect, DefectType.id == ItemDefect.defect_type_id)
         .where(ItemDefect.item_id == it.id)
     )).all()
 
-    # images grouped by kind
     imgs = (await db.execute(
         select(ItemImage.id, ItemImage.kind, ItemImage.path)
         .where(ItemImage.item_id == it.id)
@@ -227,11 +195,9 @@ async def get_item_detail(
     for iid, kind, path in imgs:
         grouped.setdefault(kind, []).append({"id": iid, "path": path})
 
-    # reviews (all)
     rws = (await db.execute(
         select(Review).where(Review.item_id == it.id).order_by(Review.submitted_at.desc())
     )).scalars().all()
-    # ---- fetch user details for submitted_by / reviewed_by in one go ----
     user_ids = {
         *[rv.submitted_by for rv in rws if rv.submitted_by is not None],
         *[rv.reviewed_by for rv in rws if rv.reviewed_by is not None],
@@ -286,8 +252,82 @@ async def get_item_detail(
         ]
     }
 
+@router.get("/{item_id}/history", response_model=List[ItemEventOut])
+async def get_item_history(
+    item_id: int,
+    db: AsyncSession = Depends(get_db),
+    user = Depends(get_current_user),
+):
+    FromS = aliased(ItemStatus)
+    ToS = aliased(ItemStatus)
 
-# ---------- POST /items/{id}/fix-request ----------
+    q = (
+        select(
+            ItemEvent.id,
+            ItemEvent.event_type,
+            ItemEvent.actor_id,
+            ItemEvent.details,
+            ItemEvent.from_status_id,
+            FromS.code.label("from_status_code"),
+            ItemEvent.to_status_id,
+            ToS.code.label("to_status_code"),
+            ItemEvent.created_at,
+            User.id.label("user_id"),
+            User.username,
+            User.display_name,
+        )
+        .outerjoin(FromS, FromS.id == ItemEvent.from_status_id)
+        .outerjoin(ToS, ToS.id == ItemEvent.to_status_id)
+        .outerjoin(User, User.id == ItemEvent.actor_id) 
+        .where(ItemEvent.item_id == item_id)
+        .order_by(ItemEvent.created_at.desc(), ItemEvent.id.desc())
+    )
+
+    rows = (await db.execute(q)).all()
+    if not rows:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="No events found for this item")
+
+    return [
+        ItemEventOut(
+            id=r.id,
+            event_type=r.event_type,
+            from_status_id=r.from_status_id,
+            from_status_code=r.from_status_code,
+            to_status_id=r.to_status_id,
+            to_status_code=r.to_status_code,
+            created_at=r.created_at.isoformat() if hasattr(r.created_at, "isoformat") else str(r.created_at),
+            actor=ActorOut(                
+                id=r.user_id,
+                username=r.username,
+                display_name=r.display_name,
+            ),
+        )
+        for r in rows
+    ]
+
+
+@router.patch("/{item_id}/status")
+async def change_item_status(
+    item_id: int,
+    body: UpdateItemStatusBody,
+    db: AsyncSession = Depends(get_db),
+    user = Depends(get_current_user),
+):
+    require_role(user, ["OPERATOR", "INSPECTOR"])
+
+    allowed_line_ids = getattr(user, "line_ids", None)
+
+    result = await operator_change_status_no_audit(
+        db,
+        item_id=item_id,
+        new_status_business=body.status,
+        actor_user_id=user.id,
+        defect_type_ids=body.defect_type_ids,
+        meta=body.meta,
+        guard_line_ids=allowed_line_ids,
+    )
+    return result
+
 @router.post("/{item_id}/fix-request")
 async def submit_fix_request(
     request: Request,
@@ -315,7 +355,6 @@ async def submit_fix_request(
     if (is_pening_review == True):
         raise HTTPException(status_code=400, detail="The fix request has been submitted")
 
-    # status check
     st_code = (
         await db.execute(
             select(ItemStatus.code).where(ItemStatus.id == it.item_status_id)
@@ -324,19 +363,15 @@ async def submit_fix_request(
     if st_code not in ("DEFECT", "RECHECK", "REJECTED"):
         raise HTTPException(status_code=400, detail="Fix request allowed only for DEFECT or RECHECK")
 
-    # --- Images validation ---
     image_ids = list(getattr(body, "image_ids", []) or [])
     if not image_ids:
         raise HTTPException(status_code=400, detail="Provide at least 1 image_id")
 
-    # Normalize and de-dup
     try:
         image_ids = list({int(i) for i in image_ids})
     except Exception:
         raise HTTPException(status_code=400, detail="image_ids must be integers")
 
-    # Read current image rows
-    # Adjust ItemImage.* fields to your actual model/columns.
     rows = await db.execute(
         select(ItemImage.id, ItemImage.review_id, ItemImage.item_id)
         .where(ItemImage.id.in_(image_ids))
@@ -365,7 +400,6 @@ async def submit_fix_request(
 
     note = getattr(body, "note", None)
 
-    # Create review
     rv = Review(
         item_id=it.id,
         review_type="DEFECT_FIX",
@@ -374,10 +408,8 @@ async def submit_fix_request(
         submit_note=note,
     )
     db.add(rv)
-    await db.flush()  # rv.id available
+    await db.flush()
 
-    # Link images as FIX; protect against races (link only if still unlinked & same/none item)
-    # If you don't have item_id on item_images, remove that predicate.
     upd = await db.execute(
         text(
             """
@@ -391,7 +423,6 @@ async def submit_fix_request(
         {"rid": rv.id, "ids": image_ids, "item_id": item_id},
     )
 
-    # If concurrent process linked any image, rowcount will be lower → 409
     if upd.rowcount != len(image_ids):
         await db.rollback()
         raise HTTPException(
@@ -399,10 +430,8 @@ async def submit_fix_request(
             detail="Images changed concurrently; please retry"
         )
 
-    # keep current_review_id (per requirement)
     it.current_review_id = rv.id
 
-    # event
     db.add(
         ItemEvent(
             item_id=it.id,
@@ -415,7 +444,6 @@ async def submit_fix_request(
     await db.commit()
     return {"review_id": rv.id}
 
-# ---------- POST /items/{id}/scrap ----------
 @router.post("/{item_id}/scrap")
 async def mark_scrap(
     request: Request,
@@ -456,13 +484,6 @@ async def mark_scrap(
     await db.commit()
     return {"ok": True, "review_id": review_id}
 
-def _norm(rel: Optional[str]) -> Optional[str]:
-    if not rel: return None
-    p = PurePosixPath(rel).as_posix().lstrip("/")
-    if ".." in p:  # safety
-        raise HTTPException(status_code=400, detail="Invalid image path")
-    return p
-
 @router.get("/{item_id}/images")
 async def list_item_images(
     item_id: int,
@@ -474,18 +495,16 @@ async def list_item_images(
     if not it or getattr(it, "deleted_at", None):
         raise HTTPException(status_code=404, detail="Item not found")
 
-    # query
     q = select(ItemImage).where(ItemImage.item_id == item_id)
     if kinds:
         kind_list = [k.strip().upper() for k in kinds.split(",") if k.strip()]
         q = q.where(ItemImage.kind.in_(kind_list))
     rows = (await db.execute(q.order_by(ItemImage.uploaded_at.asc(), ItemImage.id.asc()))).scalars().all()
 
-    # response: FE can directly use url/thumb_url
     data = []
     image_dir = settings.IMAGES_DIR
     for im in rows:
-        path = _norm(im.path)
+        path = norm(im.path)
         data.append({
             "id": im.id,
             "kind": im.kind,
@@ -495,21 +514,17 @@ async def list_item_images(
         })
     return {"data": data}
 
-
 @router.post("/report", summary="Download CSV report")
 async def get_csv_item_report(
     body: ItemReportRequest,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    # ---- Auth ----
     require_role(user, ["VIEWER"])
 
-    # Resolve line code for filename (fallback to id if missing)
     line_code = await db.scalar(select(ProductionLine.code).where(ProductionLine.id == body.line_id))
     line_code = str(line_code or body.line_id)
 
-    # ---- Aggregated defects (item_id -> "TOP, BARCODE") with DISTINCT names ----
     defects_subq = (
         select(
             ItemDefect.item_id.label("item_id"),
@@ -520,9 +535,8 @@ async def get_csv_item_report(
         .subquery()
     )
 
-    roll_match = aliased(Item)  # for BUNDLE fallback
+    roll_match = aliased(Item) 
 
-    # ---- Base query (may still duplicate due to roll_match) ----
     q = (
         select(
             Item.id.label("item_id"),
@@ -561,7 +575,6 @@ async def get_csv_item_report(
             ),
         )
 
-    # ---- Filters ----
     if body.product_code:
         like = f"%{body.product_code}%"
         if body.station == EStation.BUNDLE:
@@ -595,16 +608,12 @@ async def get_csv_item_report(
     if body.detected_to:
         q = q.where(Item.detected_at <= body.detected_to)
 
-    # ---- Deduplicate to one row per item (Postgres DISTINCT ON) ----
-    # DISTINCT ON requires ORDER BY begin with the distinct keys; we’ll sort final rows in Python by timestamp desc.
     q = q.distinct(Item.id).order_by(Item.id, Item.detected_at.desc(), Item.id.desc())
 
     rows = (await db.execute(q)).all()
 
-    # Keep CSV order as requested: detected_at DESC then id DESC
     rows.sort(key=lambda r: (r.detected_at or datetime.min, r.item_id), reverse=True)
 
-    # ---- CSV stream ----
     header = [
         "PRODUCT CODE",
         "ROLL NUMBER" if body.station == EStation.ROLL else "BUNDLE NUMBER",
@@ -615,7 +624,6 @@ async def get_csv_item_report(
     ]
 
     def row_to_list(r) -> list:
-        # Fallbacks for BUNDLE from matched roll
         product_code_val = r.product_code
         job_order_val = r.job_order_number
         width_val = r.roll_width
@@ -648,8 +656,6 @@ async def get_csv_item_report(
         headers={"Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "no-store"},
     )
 
-
-
 def _status_label(code: str, defects_csv: Optional[str], ai_note: Optional[str]) -> str:
     if code == "DEFECT":
         return f"Defect{': ' + defects_csv if defects_csv else ''}"
@@ -664,4 +670,3 @@ def _status_label(code: str, defects_csv: Optional[str], ai_note: Optional[str])
     if code == "REJECTED":
         return "Rejected"
     return code or ""
-# ---------- PATCH /items/{id}/decision ----------

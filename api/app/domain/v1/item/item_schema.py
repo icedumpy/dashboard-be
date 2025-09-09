@@ -1,7 +1,32 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Literal, Any, Dict
 from datetime import datetime
 from app.core.db.repo.models import EStation, EItemStatusCode
+
+OperatorStatus = Literal["DEFECT", "SCRAP", "NORMAL"]
+
+class ActorOut(BaseModel):
+    id: int
+    username: Optional[str] = None
+    display_name: Optional[str] = None
+
+class ItemEventOut(BaseModel):
+    id: int
+    event_type: str
+    actor: ActorOut
+    from_status_id: Optional[int] = None
+    from_status_code: Optional[str] = None
+    to_status_id: Optional[int] = None
+    to_status_code: Optional[str] = None
+    created_at: str
+
+class UpdateItemStatusBody(BaseModel):
+    status: OperatorStatus = Field(..., description="DEFECT | SCRAP | NORMAL")
+    defect_type_ids: Optional[List[int]] = Field(
+        None,
+        description="Required when changing NORMAL -> DEFECT. Replaces existing defects if provided."
+    )
+    meta: Optional[Dict[str, Any]] = None 
 
 class FixRequestBody(BaseModel):
     image_ids: List[int] = Field(..., example=[1])
@@ -14,7 +39,6 @@ class FixRequestBody(BaseModel):
                 "note": "Fixed defect using patching method"
             }
         }
-        
         
 class ItemReportRequest(BaseModel):
     line_id: int = Field(..., ge=1, description="Numeric line id")
