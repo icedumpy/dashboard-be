@@ -313,7 +313,7 @@ async def change_item_status(
     db: AsyncSession = Depends(get_db),
     user = Depends(get_current_user),
 ):
-    require_role(user, ["OPERATOR"])
+    require_role(user, ["OPERATOR", "INSPECTOR"])
 
     allowed_line_ids = getattr(user, "line_ids", None)
 
