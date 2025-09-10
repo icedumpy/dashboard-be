@@ -24,32 +24,27 @@ router = APIRouter()
 
 @router.post("/login", response_model=TokenPair)
 async def login(payload: LoginIn, db: AsyncSession = Depends(get_db)):
-    # 1) Load user
     q = await db.execute(select(User).where(User.username == payload.username))
     user = q.scalar_one_or_none()
 
-    # 2) Fail early if not found
     if not user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid credentials",
         )
 
-    # 3) Check password
     if not verify_password(payload.password, user.password):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid credentials",
         )
 
-    # 4) Check active
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User disabled",
         )
 
-    # 5) Issue tokens
     subject = user.username or str(user.id)
     access = create_access_token(sub=subject)
     refresh = create_refresh_token(sub=subject)
@@ -57,7 +52,6 @@ async def login(payload: LoginIn, db: AsyncSession = Depends(get_db)):
 
 @router.post("/refresh", response_model=TokenPair)
 async def refresh(payload: RefreshIn, db: AsyncSession = Depends(get_db)):
-    # Verify refresh token
     try:
         data = decode_token(payload.refresh_token)
         if data.get("type") != "refresh":
@@ -68,7 +62,6 @@ async def refresh(payload: RefreshIn, db: AsyncSession = Depends(get_db)):
     except JWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
 
-    # Load user (by username first; fallback to id if sub is numeric)
     stmt = select(User).where(User.username == sub)
     if sub.isdigit():
         stmt = select(User).where(or_(User.username == sub, User.id == int(sub)))
