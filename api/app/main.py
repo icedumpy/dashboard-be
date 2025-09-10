@@ -40,14 +40,13 @@ IMAGES_PREFIX = f"/{settings.IMAGES_DIR}".rstrip("/")
 
 app.mount(IMAGES_PREFIX, StaticFiles(directory=str(IMAGES_DIR)), name="images")
 
-# ---- CORS (must be BEFORE auth) ----
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,      
-    allow_credentials=True,           
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "If-Match", "If-None-Match"],
-    expose_headers=["Content-Disposition", "ETag"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],  # includes Authorization
+    expose_headers=["Content-Disposition"],
     max_age=86400,
 )
 
@@ -60,19 +59,22 @@ async def add_cache_headers(request: Request, call_next):
     return resp
 
 # ---- JWT middleware with bypass for OPTIONS & public paths ----
+AUTH_PREFIX = "/api/v1/auth/"
 @app.middleware("http")
 async def jwt_bypass_wrapper(request: Request, call_next):
-    # Allow CORS preflight
     if request.method == "OPTIONS":
         return await call_next(request)
+
     path = request.url.path
     if (
         path.startswith(DOCS_PATH)
         or path.startswith(REDOC_PATH)
         or path == OPENAPI_PATH
         or path.startswith(f"{IMAGES_PREFIX}/")
+        or path.startswith(AUTH_PREFIX)        
     ):
         return await call_next(request)
+
     return await jwt_middleware(request, call_next)
 
 # ---- Routers ----
