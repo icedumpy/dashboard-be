@@ -284,8 +284,8 @@ async def get_item_history(
     )
 
     rows = (await db.execute(q)).all()
-    if not rows:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="No events found for this item")
+    # if not rows:
+    #     raise HTTPException(status.HTTP_404_NOT_FOUND, detail="No events found for this item")
 
     return [
         ItemEventOut(
