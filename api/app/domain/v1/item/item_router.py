@@ -41,6 +41,7 @@ async def list_items(
     job_order_number: Optional[str] = Query(None, description="contains match"),
     roll_width_min: Optional[float] = Query(None, ge=0),
     roll_width_max: Optional[float] = Query(None, ge=0),
+    roll_id: Optional[str] = Query(None, description="filter by roll_id"),
 
     status: Annotated[list[EItemStatusCode] | None, Query(description="repeatable status codes")] = None,
 
@@ -68,6 +69,7 @@ async def list_items(
             (Item.roll_number.ilike(f"%{number}%")) |
             (Item.bundle_number.ilike(f"%{number}%"))
         )
+    if roll_id: q = q.where(Item.roll_id.ilike(f"%{roll_id}%"))
     if job_order_number: q = q.where(Item.job_order_number.ilike(f"%{job_order_number}%"))
     if roll_width_min is not None: q = q.where(Item.roll_width >= roll_width_min)
     if roll_width_max is not None: q = q.where(Item.roll_width <= roll_width_max)
