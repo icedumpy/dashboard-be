@@ -25,9 +25,12 @@ from app.utils.helper.helper import (
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import aliased
 import csv
+import asyncio
+import logging
 
 router = APIRouter()
 
+log = logging.getLogger(__name__)
 
 # ---------- GET /items ----------
 @router.get("", summary="List items")
@@ -546,6 +549,7 @@ async def list_item_images(
 @router.post("/report", summary="Download CSV report")
 async def get_csv_item_report(
     body: ItemReportRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -554,47 +558,45 @@ async def get_csv_item_report(
     line_code = await db.scalar(select(ProductionLine.code).where(ProductionLine.id == body.line_id))
     line_code = str(line_code or body.line_id)
 
-    defects_subq = (
-        select(
-            ItemDefect.item_id.label("item_id"),
-            func.string_agg(func.distinct(DefectType.name_th), literal(", ")).label("defects_csv"),
-        )
-        .join(DefectType, DefectType.id == ItemDefect.defect_type_id)
-        .group_by(ItemDefect.item_id)
-        .subquery()
-    )
+    roll_match = aliased(Item)
 
-    roll_match = aliased(Item) 
+    # build base columns first
+    base_cols = [
+        Item.id.label("item_id"),
+        Item.station,
+        Item.line_id,
+        Item.product_code,
+        Item.roll_number,
+        Item.bundle_number,
+        Item.job_order_number,
+        Item.roll_width,
+        Item.detected_at,
+        Item.ai_note,
+        ItemStatus.code.label("status_code"),
+    ]
 
-    q = (
-        select(
-            Item.id.label("item_id"),
-            Item.station,
-            Item.line_id,
-            Item.product_code,
-            Item.roll_number,
-            Item.bundle_number,
-            Item.job_order_number,
-            Item.roll_width,
-            Item.detected_at,
-            Item.ai_note,
-            ItemStatus.code.label("status_code"),
-            defects_subq.c.defects_csv,
+    # add r_* columns depending on station
+    if body.station == EStation.BUNDLE:
+        base_cols += [
             roll_match.product_code.label("r_product_code"),
             roll_match.job_order_number.label("r_job_order_number"),
             roll_match.roll_width.label("r_roll_width"),
-        )
-        .join(ItemStatus, ItemStatus.id == Item.item_status_id)
-        .outerjoin(defects_subq, defects_subq.c.item_id == Item.id)
-        .where(
-            Item.line_id == body.line_id,
-            Item.station == body.station.value,
-            Item.deleted_at.is_(None),
-        )
+        ]
+    else:
+        base_cols += [
+            literal(None).label("r_product_code"),
+            literal(None).label("r_job_order_number"),
+            literal(None).label("r_roll_width"),
+        ]
+
+    base = select(*base_cols).join(ItemStatus, ItemStatus.id == Item.item_status_id).where(
+        Item.line_id == body.line_id,
+        Item.station == body.station.value,
+        Item.deleted_at.is_(None),
     )
 
     if body.station == EStation.BUNDLE:
-        q = q.outerjoin(
+        base = base.outerjoin(
             roll_match,
             and_(
                 roll_match.station == EStation.ROLL.value,
@@ -604,45 +606,78 @@ async def get_csv_item_report(
             ),
         )
 
+    # filters
     if body.product_code:
         like = f"%{body.product_code}%"
         if body.station == EStation.BUNDLE:
-            q = q.where(or_(Item.product_code.ilike(like), roll_match.product_code.ilike(like)))
+            base = base.where(or_(Item.product_code.ilike(like), roll_match.product_code.ilike(like)))
         else:
-            q = q.where(Item.product_code.ilike(like))
+            base = base.where(Item.product_code.ilike(like))
 
     if body.number:
         like = f"%{body.number}%"
-        q = q.where(or_(Item.roll_number.ilike(like), Item.bundle_number.ilike(like)))
+        base = base.where(or_(Item.roll_number.ilike(like), Item.bundle_number.ilike(like)))
 
     if body.job_order_number:
         like = f"%{body.job_order_number}%"
         if body.station == EStation.BUNDLE:
-            q = q.where(or_(Item.job_order_number.ilike(like), roll_match.job_order_number.ilike(like)))
+            base = base.where(or_(Item.job_order_number.ilike(like), roll_match.job_order_number.ilike(like)))
         else:
-            q = q.where(Item.job_order_number.ilike(like))
+            base = base.where(Item.job_order_number.ilike(like))
 
     if body.roll_width_min is not None or body.roll_width_max is not None:
         width_expr = func.coalesce(Item.roll_width, roll_match.roll_width) if body.station == EStation.BUNDLE else Item.roll_width
         if body.roll_width_min is not None:
-            q = q.where(width_expr >= body.roll_width_min)
+            base = base.where(width_expr >= body.roll_width_min)
         if body.roll_width_max is not None:
-            q = q.where(width_expr <= body.roll_width_max)
+            base = base.where(width_expr <= body.roll_width_max)
 
     if body.status:
-        q = q.where(ItemStatus.code.in_([s.value for s in body.status]))
+        base = base.where(ItemStatus.code.in_([s.value for s in body.status]))
 
     if body.detected_from:
-        q = q.where(Item.detected_at >= body.detected_from)
+        base = base.where(Item.detected_at >= body.detected_from)
     if body.detected_to:
-        q = q.where(Item.detected_at <= body.detected_to)
+        base = base.where(Item.detected_at <= body.detected_to)
 
-    q = q.distinct(Item.id).order_by(Item.id, Item.detected_at.desc(), Item.id.desc())
+    base_sq = base.subquery("base")
 
-    rows = (await db.execute(q)).all()
+    # defects only for items in base
+    defects_subq = (
+        select(
+            ItemDefect.item_id.label("item_id"),
+            func.string_agg(func.distinct(DefectType.name_th), literal(", ")).label("defects_csv"),
+        )
+        .join(DefectType, DefectType.id == ItemDefect.defect_type_id)
+        .where(ItemDefect.item_id.in_(select(base_sq.c.item_id)))
+        .group_by(ItemDefect.item_id)
+        .subquery()
+    )
 
-    rows.sort(key=lambda r: (r.detected_at or datetime.min, r.item_id), reverse=True)
+    # final query: NO DISTINCT, order for streaming
+    q = (
+        select(
+            base_sq.c.item_id,
+            base_sq.c.station,
+            base_sq.c.line_id,
+            base_sq.c.product_code,
+            base_sq.c.roll_number,
+            base_sq.c.bundle_number,
+            base_sq.c.job_order_number,
+            base_sq.c.roll_width,
+            base_sq.c.detected_at,
+            base_sq.c.ai_note,
+            base_sq.c.status_code,
+            defects_subq.c.defects_csv,
+            base_sq.c.r_product_code,
+            base_sq.c.r_job_order_number,
+            base_sq.c.r_roll_width,
+        )
+        .outerjoin(defects_subq, defects_subq.c.item_id == base_sq.c.item_id)
+        .order_by(base_sq.c.detected_at.desc(), base_sq.c.item_id.desc())
+    )
 
+    # ---------- CSV ----------
     header = [
         "PRODUCT CODE",
         "ROLL NUMBER" if body.station == EStation.ROLL else "BUNDLE NUMBER",
@@ -652,38 +687,72 @@ async def get_csv_item_report(
         "STATUS",
     ]
 
-    def row_to_list(r) -> list:
-        product_code_val = r.product_code
-        job_order_val = r.job_order_number
-        width_val = r.roll_width
+    def row_to_list(m) -> list:
+        product_code_val = m.get("product_code")
+        job_order_val = m.get("job_order_number")
+        width_val = m.get("roll_width")
         if body.station == EStation.BUNDLE:
-            product_code_val = product_code_val or r.r_product_code
-            job_order_val = job_order_val or r.r_job_order_number
-            width_val = width_val if width_val is not None else r.r_roll_width
+            product_code_val = product_code_val or m.get("r_product_code")
+            job_order_val = job_order_val or m.get("r_job_order_number")
+            width_val = width_val if width_val is not None else m.get("r_roll_width")
 
-        num_val = r.roll_number if body.station == EStation.ROLL else r.bundle_number
-        status_str = _status_label(r.status_code, r.defects_csv, r.ai_note)
-        ts = r.detected_at.isoformat(timespec="seconds") if r.detected_at else ""
+        num_val = m.get("roll_number") if body.station == EStation.ROLL else m.get("bundle_number")
+        status_str = _status_label(m.get("status_code"), m.get("defects_csv"), m.get("ai_note"))
+        dt = m.get("detected_at")
+        ts = dt.isoformat(timespec="seconds") if dt else ""
         width_out = "" if width_val is None else str(width_val)
-
         return [product_code_val or "", num_val or "", job_order_val or "", width_out, ts, status_str]
 
-    def csv_iter():
+    async def acsv_iter():
         buf = StringIO()
-        writer = csv.writer(buf)
-        writer.writerow(header); yield buf.getvalue(); buf.seek(0); buf.truncate(0)
-        for r in rows:
-            writer.writerow(row_to_list(r))
-            yield buf.getvalue(); buf.seek(0); buf.truncate(0)
+        writer = csv.writer(buf, lineterminator="\n")
+        THRESHOLD = 256 * 1024  # ~256 KiB
+
+        try:
+            writer.writerow(header)
+            yield buf.getvalue()
+            buf.seek(0); buf.truncate(0)
+
+            result = await db.stream(q)
+            try:
+                async for row in result.mappings():
+                    if await request.is_disconnected():
+                        return
+                    writer.writerow(row_to_list(row))
+                    if buf.tell() >= THRESHOLD:
+                        yield buf.getvalue()
+                        buf.seek(0); buf.truncate(0)
+            finally:
+                await result.close()
+
+            leftover = buf.getvalue()
+            if leftover:
+                yield leftover
+
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("CSV /report stream crashed")
+            chunk = buf.getvalue()
+            if chunk:
+                try:
+                    yield chunk
+                except Exception:
+                    pass
+            return
 
     today = datetime.now().strftime("%Y%m%d")
     filename = f"items_{body.station.value.lower()}_line{line_code}_{today}.csv"
 
     return StreamingResponse(
-        csv_iter(),
+        acsv_iter(),
         media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "no-store"},
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
     )
+
 
 def _status_label(code: str, defects_csv: Optional[str], ai_note: Optional[str]) -> str:
     if code == "DEFECT":
