@@ -3,9 +3,6 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_
 from jose import JWTError
-from datetime import datetime, time, timedelta
-from zoneinfo import ZoneInfo
-
 
 from app.core.db.session import get_db
 from app.core.security.auth import (
@@ -20,28 +17,7 @@ from app.core.db.repo.models import (
 )
 from app.core.security.auth import get_current_user
 from app.core.db.repo.user.user_schema import LoginIn, TokenPair, RefreshIn, UserOut
-
-TZ = ZoneInfo("Asia/Bangkok")
-
-def current_shift_window(now: datetime | None = None) -> tuple[datetime, datetime]:
-    now = (now.astimezone(TZ) if now.tzinfo else now.replace(tzinfo=TZ)) if now else datetime.now(TZ)
-    today = now.date()
-
-    day_start = datetime.combine(today, time(8, 0), TZ)
-    day_end   = datetime.combine(today, time(20, 0), TZ)
-
-    if day_start <= now < day_end:
-        return day_start, day_end
-
-    # - if now >= 20:00 → [20:00 today, 08:00 tomorrow)
-    # - if now  < 08:00 → [20:00 yesterday, 08:00 today)
-    if now >= day_end:
-        return day_end, day_start + timedelta(days=1)
-    else:
-        return day_end - timedelta(days=1), day_start
-
-
-
+from app.utils.helper.helper import current_shift_window
 
 router = APIRouter()
 
