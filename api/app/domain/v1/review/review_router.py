@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Query, Depends, HTTPException, Request
-from typing import List, Optional, Annotated
+from typing import Optional, Annotated
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, distinct
+from sqlalchemy import select, func, insert
 from datetime import datetime
 
 
@@ -16,6 +16,8 @@ from app.utils.helper.helper import (
     require_role,
 )
 from zoneinfo import ZoneInfo
+import json
+
 
 TH = ZoneInfo("Asia/Bangkok")
 
@@ -36,7 +38,6 @@ async def list_reviews(
     page_size = max(1, min(page_size, 100))
     offset = (page - 1) * page_size
 
-    # ---------- build “latest-per-item” subquery for the LIST (applies review_state) ----------
     rn = func.row_number().over(
         partition_by=Review.item_id,
         order_by=(Review.updated_at.desc(), Review.id.desc())
@@ -65,14 +66,12 @@ async def list_reviews(
     if review_state:
         base_cols = base_cols.where(Review.state.in_([s.value for s in review_state]))
 
-    s = base_cols.subquery("s")  # columns: rid, iid, state, r_updated_at, i_detected_at, item_pk, rn
+    s = base_cols.subquery("s") 
 
-    # total after distinct-by-item (rn=1)
     total = await db.scalar(
         select(func.count()).select_from(select(s.c.rid).where(s.c.rn == 1).subquery())
     )
 
-    # ids for current page (latest per item only)
     ids_q = (
         select(s.c.rid)
         .where(s.c.rn == 1)
@@ -82,7 +81,6 @@ async def list_reviews(
     )
     review_ids = [row[0] for row in (await db.execute(ids_q)).all()]
 
-    # ---------- SUMMARY subquery (same filters, EXCEPT it ignores review_state) ----------
     rn2 = func.row_number().over(
         partition_by=Review.item_id,
         order_by=(Review.updated_at.desc(), Review.id.desc())
@@ -117,7 +115,6 @@ async def list_reviews(
         "total":    sum(sum_map.values()),
     }
 
-    # early return if no rows
     if not review_ids:
         return {
             "data": [],
@@ -130,7 +127,6 @@ async def list_reviews(
             },
         }
 
-    # ---------- rest of your code unchanged ----------
     reviews = (await db.execute(select(Review).where(Review.id.in_(review_ids)))).scalars().all()
     id_pos = {rid: i for i, rid in enumerate(review_ids)}
     reviews.sort(key=lambda rv: id_pos[rv.id])
@@ -224,6 +220,123 @@ async def list_reviews(
         },
     }
     
+@router.get("/{review_id}")
+async def get_review_by_id(
+    review_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    require_role(user, ["INSPECTOR"])
+
+    rv = await db.get(Review, review_id)
+    if not rv:
+        raise HTTPException(status_code=404, detail="Review not found")
+
+    defects_rows = (
+        await db.execute(
+            select(
+                ItemDefect.item_id,
+                ItemDefect.id.label("item_defect_id"),
+                ItemDefect.defect_type_id,
+                DefectType.code,
+                DefectType.name_th,
+                ItemDefect.meta,
+            )
+            .join(DefectType, DefectType.id == ItemDefect.defect_type_id)
+            .where(ItemDefect.item_id == rv.item_id)
+        )
+    ).all()
+
+    defects = [
+        {
+            "item_defect_id": r.item_defect_id,
+            "item_id": r.item_id,
+            "defect_type_id": r.defect_type_id,
+            "defect_code": r.code,
+            "defect_name_th": r.name_th,
+            "meta": r.meta or {},
+        }
+        for r in defects_rows
+    ]
+
+    request_event = (
+        await db.execute(
+            select(ItemEvent)
+            .where(
+                ItemEvent.item_id == rv.item_id,
+                ItemEvent.event_type == "REQUEST_STATUS_CHANGE",
+            )
+            .order_by(ItemEvent.created_at.desc(), ItemEvent.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    details = {}
+    if request_event:
+        details = request_event.details or {}
+        if isinstance(details, str):
+            try:
+                details = json.loads(details)
+            except Exception:
+                details = {}
+
+    defect_type_ids = sorted({int(x) for x in (details.get("defect_type_ids") or []) if x is not None})
+
+    request_defects = []
+    if defect_type_ids:
+        rows = (
+            await db.execute(
+                select(
+                    DefectType.id.label("defect_type_id"),
+                    DefectType.code,
+                    DefectType.name_th,
+                ).where(DefectType.id.in_(defect_type_ids))
+            )
+        ).all()
+        request_defects = [
+            {
+                "defect_type_id": r.defect_type_id,
+                "defect_code": r.code,
+                "defect_name_th": r.name_th,
+            }
+            for r in rows
+        ]
+
+    request_event_payload = (
+        {
+            "id": request_event.id,
+            "event_type": request_event.event_type,
+            "from_status_id": request_event.from_status_id,
+            "to_status_id": request_event.to_status_id,
+            "defects": request_defects,
+            "created_at": request_event.created_at.isoformat()
+            if getattr(request_event, "created_at", None)
+            else None,
+        }
+        if request_event
+        else None
+    )
+
+    review_payload = {
+        "id": rv.id,
+        "item_id": rv.item_id,
+        "review_type": rv.review_type,     
+        "state": rv.state,                
+        "submitted_by": getattr(rv, "submitted_by", None),
+        "submitted_at": rv.submitted_at.isoformat() if getattr(rv, "submitted_at", None) else None,
+        "reviewed_by": getattr(rv, "reviewed_by", None),
+        "reviewed_at": rv.reviewed_at.isoformat() if getattr(rv, "reviewed_at", None) else None,
+        "review_note": getattr(rv, "review_note", None),
+        "reject_reason": getattr(rv, "reject_reason", None),
+        "current_review_id": rv.id,
+    }
+
+    return {
+        "review": review_payload,
+        "defects": defects,
+        "request_status": request_event_payload,
+    }
+    
 @router.post("/{review_id}/decision")
 async def decide_fix(
     review_id: int,
@@ -232,36 +345,113 @@ async def decide_fix(
     user: User = Depends(get_current_user),
 ):
     require_role(user, ["INSPECTOR"])
+
     rv = await db.get(Review, review_id)
     if not rv:
         raise HTTPException(status_code=404, detail="Review not found")
 
     it = await db.get(Item, rv.item_id)
-    
-    decision = getattr(body, 'decision')
-    note = getattr(body, 'note')
+    if not it:
+        raise HTTPException(status_code=404, detail="Item not found")
 
-    if not rv or rv.item_id != it.id or rv.state != "PENDING":
+    decision = getattr(body, "decision")
+    note = getattr(body, "note")
+
+    if rv.item_id != it.id or rv.state != "PENDING":
         raise HTTPException(status_code=400, detail="Invalid or non-pending review")
 
     if decision not in ("APPROVED", "REJECTED"):
         raise HTTPException(status_code=400, detail="Invalid decision")
+
+    request_event = (
+        await db.execute(
+            select(ItemEvent)
+            .where(
+                ItemEvent.item_id == it.id,
+                ItemEvent.event_type == "REQUEST_STATUS_CHANGE",
+            )
+            .order_by(ItemEvent.created_at.desc(), ItemEvent.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
     rv.reviewed_by = user.id
     rv.reviewed_at = datetime.now(TH)
 
     if decision == "APPROVED":
         rv.state = "APPROVED"
         rv.review_note = note
-        new_status_id = (await db.execute(select(ItemStatus.id).where(ItemStatus.code == "QC_PASSED"))).scalar_one()
-        it.item_status_id = new_status_id
-        db.add(ItemEvent(item_id=it.id, actor_id=user.id, event_type="FIX_DECISION_APPROVED", from_status_id=None, to_status_id=new_status_id))
+
+        if rv.review_type == "REQUEST_STATUS_CHANGE" and request_event:
+            new_status_id = request_event.to_status_id
+            it.item_status_id = new_status_id
+
+            details = request_event.details or {}
+            defect_ids = details.get("defect_type_ids") or []
+
+            if defect_ids:
+                uniq_ids = sorted({int(x) for x in defect_ids if x is not None})
+
+                rows = [
+                    {"item_id": rv.item_id, "defect_type_id": dtid, "meta": {}}
+                    for dtid in uniq_ids
+                ]
+
+                await db.execute(insert(ItemDefect).values(rows))
+
+            db.add(
+                ItemEvent(
+                    item_id=it.id,
+                    actor_id=user.id,
+                    event_type="FIX_DECISION_APPROVED",
+                    from_status_id=request_event.from_status_id,
+                    to_status_id=request_event.to_status_id,
+                )
+            )
+        else:
+            new_status_id = (
+                await db.execute(
+                    select(ItemStatus.id).where(ItemStatus.code == "QC_PASSED")
+                )
+            ).scalar_one()
+            it.item_status_id = new_status_id
+
+            db.add(
+                ItemEvent(
+                    item_id=it.id,
+                    actor_id=user.id,
+                    event_type="FIX_DECISION_APPROVED",
+                    from_status_id=None,
+                    to_status_id=new_status_id,
+                )
+            )
+
     else:
         rv.state = "REJECTED"
         rv.reject_reason = note
-        rej_status_id = (await db.execute(select(ItemStatus.id).where(ItemStatus.code == "REJECTED"))).scalar_one()
-        it.item_status_id = rej_status_id
-        db.add(ItemEvent(item_id=it.id, actor_id=user.id, event_type="FIX_DECISION_REJECTED", from_status_id=None, to_status_id=rej_status_id))
 
-    # keep current_review_id as-is (history)
+        rej_status_id = (
+            await db.execute(
+                select(ItemStatus.id).where(ItemStatus.code == "REJECTED")
+            )
+        ).scalar_one()
+        it.item_status_id = rej_status_id
+
+        db.add(
+            ItemEvent(
+                item_id=it.id,
+                actor_id=user.id,
+                event_type="FIX_DECISION_REJECTED",
+                from_status_id=request_event.from_status_id if request_event else None,
+                to_status_id=rej_status_id,
+            )
+        )
+
     await db.commit()
-    return {"ok": True, "new_status": "QC_PASSED" if decision=="APPROVED" else "REJECTED"}
+
+    return {
+        "ok": True,
+        "new_status": (
+            await db.scalar(select(ItemStatus.code).where(ItemStatus.id == it.item_status_id))
+        ),
+    }

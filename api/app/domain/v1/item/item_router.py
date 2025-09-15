@@ -15,7 +15,7 @@ from app.core.db.repo.models import (
 )
 
 from app.domain.v1.item.item_schema import FixRequestBody, UpdateItemStatusBody, ItemReportRequest, ItemEventOut, ActorOut
-from app.domain.v1.item.item_service import summarize_station, operator_change_status_no_audit, norm
+from app.domain.v1.item.item_service import summarize_station, operator_change_status, norm
 from app.utils.helper.helper import (
     require_role,
     require_same_line,
@@ -349,11 +349,12 @@ async def change_item_status(
 
     allowed_line_ids = getattr(user, "line_ids", None)
 
-    result = await operator_change_status_no_audit(
+    result = await operator_change_status(
         db,
         item_id=item_id,
         new_status_business=body.status,
         actor_user_id=user.id,
+        actor_role=user.role,
         defect_type_ids=body.defect_type_ids,
         meta=body.meta,
         guard_line_ids=allowed_line_ids,
