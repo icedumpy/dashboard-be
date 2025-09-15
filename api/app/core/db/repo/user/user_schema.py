@@ -10,12 +10,8 @@ class ProductionLineOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 class ShiftOut(BaseModel):
-    id: int
-    code: Optional[str] = None
-    name: Optional[str] = None
     start_time: Optional[time] = None
     end_time: Optional[time] = None
-    model_config = ConfigDict(from_attributes=True)
 
 class UserOut(BaseModel):
     id: int

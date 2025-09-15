@@ -6,13 +6,32 @@ from fastapi import Request
 from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
+from datetime import datetime, time, timedelta
+from zoneinfo import ZoneInfo
 from app.core.db.repo.models import User, Item, ItemImage, ProductionLine
 
 
 
 IMAGES_DIR = settings.IMAGES_DIR
+TZ = ZoneInfo("Asia/Bangkok")
 
+def current_shift_window(now: datetime | None = None) -> tuple[datetime, datetime]:
+    now = (now.astimezone(TZ) if now.tzinfo else now.replace(tzinfo=TZ)) if now else datetime.now(TZ)
+    today = now.date()
+
+    day_start = datetime.combine(today, time(8, 0), TZ)
+    day_end   = datetime.combine(today, time(20, 0), TZ)
+
+    if day_start <= now < day_end:
+        return day_start, day_end
+
+    # - if now >= 20:00 → [20:00 today, 08:00 tomorrow)
+    # - if now  < 08:00 → [20:00 yesterday, 08:00 today)
+    if now >= day_end:
+        return day_end, day_start + timedelta(days=1)
+    else:
+        return day_end - timedelta(days=1), day_start
+    
 def require_role(user: User, allowed: List[str]):
     if user.role not in allowed:
         raise HTTPException(status_code=403, detail="Forbidden")
@@ -20,11 +39,6 @@ def require_role(user: User, allowed: List[str]):
 def require_same_line(user: User, item: Item):
     if user.line_id != item.line_id:
         raise HTTPException(status_code=403, detail="Cross-line operation not allowed")
-
-def require_same_shift_if_operator(user: User, item: Item):
-    if user.role == "OPERATOR" and user.shift_id is not None and user.shift_id != getattr(item, "shift_id", user.shift_id):
-        # item has no shift; we check only user's shift rule as you requested
-        raise HTTPException(status_code=403, detail="Operator shift mismatch")
 
 def precondition_if_unmodified_since(request: Request, last_updated_at: datetime):
     ims = request.headers.get("If-Unmodified-Since")

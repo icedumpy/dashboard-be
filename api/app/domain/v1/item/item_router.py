@@ -3,7 +3,7 @@ from fastapi import APIRouter, Query, Depends, HTTPException, Request, status
 from typing import Optional, Annotated, List
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_, and_, literal, text
-from datetime import datetime
+from datetime import datetime, timedelta
 from app.core.config.config import settings
 from io import StringIO
 from app.core.db.session import get_db
@@ -13,13 +13,14 @@ from app.core.db.repo.models import (
     Review, ItemImage, ItemEvent,
     EStation,EItemStatusCode,User
 )
+
 from app.domain.v1.item.item_schema import FixRequestBody, UpdateItemStatusBody, ItemReportRequest, ItemEventOut, ActorOut
-from app.domain.v1.item.item_service import summarize_station, operator_change_status_no_audit, norm
+from app.domain.v1.item.item_service import summarize_station, operator_change_status, norm
 from app.utils.helper.helper import (
     require_role,
     require_same_line,
-    require_same_shift_if_operator,
-    precondition_if_unmodified_since
+    precondition_if_unmodified_since,
+    TZ
 )
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import aliased
@@ -41,6 +42,7 @@ async def list_items(
     job_order_number: Optional[str] = Query(None, description="contains match"),
     roll_width_min: Optional[float] = Query(None, ge=0),
     roll_width_max: Optional[float] = Query(None, ge=0),
+    roll_id: Optional[str] = Query(None, description="filter by roll_id"),
 
     status: Annotated[list[EItemStatusCode] | None, Query(description="repeatable status codes")] = None,
 
@@ -53,7 +55,7 @@ async def list_items(
     require_role(user, ["VIEWER", "OPERATOR", "INSPECTOR"])
     page_size = max(1, min(page_size, 100))
     offset = (page - 1) * page_size
-
+    
     q = select(Item).where(Item.deleted_at.is_(None))
 
     q = q.join(ItemStatus, Item.item_status_id == ItemStatus.id)
@@ -68,6 +70,7 @@ async def list_items(
             (Item.roll_number.ilike(f"%{number}%")) |
             (Item.bundle_number.ilike(f"%{number}%"))
         )
+    if roll_id: q = q.where(Item.roll_id.ilike(f"%{roll_id}%"))
     if job_order_number: q = q.where(Item.job_order_number.ilike(f"%{job_order_number}%"))
     if roll_width_min is not None: q = q.where(Item.roll_width >= roll_width_min)
     if roll_width_max is not None: q = q.where(Item.roll_width <= roll_width_max)
@@ -77,6 +80,20 @@ async def list_items(
 
     if detected_from: q = q.where(text("qc.items.detected_at >= :df")).params(df=detected_from)
     if detected_to: q = q.where(text("qc.items.detected_at <= :dt")).params(dt=detected_to)
+    
+    if detected_from is None and detected_to is None:
+        now = datetime.now(TZ)
+
+        if user.role == "VIEWER":
+            # subtract 365 days (approx 1 year)
+            dt = now - timedelta(days=365)
+            q = q.where(text("qc.items.detected_at >= :dt")).params(dt=dt)
+
+        elif user.role == "OPERATOR":
+            # subtract 30 days
+            dt = now - timedelta(days=30)
+            q = q.where(text("qc.items.detected_at >= :dt")).params(dt=dt)
+    
 
     q = q.order_by(ItemStatus.display_order.asc(), Item.detected_at.desc(), Item.id.desc())
 
@@ -110,7 +127,6 @@ async def list_items(
         
         st = (await db.execute(select(ItemStatus.code).where(ItemStatus.id == it.item_status_id))).scalar()
 
-        
         if it.station == EStation.BUNDLE:
             q = (
                 select(Item)
@@ -284,27 +300,43 @@ async def get_item_history(
     )
 
     rows = (await db.execute(q)).all()
-    # if not rows:
-    #     raise HTTPException(status.HTTP_404_NOT_FOUND, detail="No events found for this item")
+    
+    rows = (await db.execute(q)).all()
 
-    return [
-        ItemEventOut(
+    data: list[ItemEventOut] = []
+    for r in rows:
+        defects: list[str] = []
+
+        if r.from_status_code == "DEFECT" or r.to_status_code == "DEFECT":
+            result = await db.execute(
+                select(DefectType.name_th)
+                .join(ItemDefect, DefectType.id == ItemDefect.defect_type_id)
+                .where(ItemDefect.item_id == item_id)
+            )
+            defects = result.unique().scalars().all()
+
+        v = ItemEventOut(
             id=r.id,
             event_type=r.event_type,
             from_status_id=r.from_status_id,
             from_status_code=r.from_status_code,
             to_status_id=r.to_status_id,
             to_status_code=r.to_status_code,
-            created_at=r.created_at.isoformat() if hasattr(r.created_at, "isoformat") else str(r.created_at),
-            actor=ActorOut(                
+            created_at=(
+                r.created_at.isoformat()
+                if hasattr(r.created_at, "isoformat")
+                else str(r.created_at)
+            ),
+            defects=defects,
+            actor=ActorOut(
                 id=r.user_id,
                 username=r.username,
                 display_name=r.display_name,
             ),
         )
-        for r in rows
-    ]
+        data.append(v)
 
+    return data
 
 @router.patch("/{item_id}/status")
 async def change_item_status(
@@ -317,11 +349,12 @@ async def change_item_status(
 
     allowed_line_ids = getattr(user, "line_ids", None)
 
-    result = await operator_change_status_no_audit(
+    result = await operator_change_status(
         db,
         item_id=item_id,
         new_status_business=body.status,
         actor_user_id=user.id,
+        actor_role=user.role,
         defect_type_ids=body.defect_type_ids,
         meta=body.meta,
         guard_line_ids=allowed_line_ids,
@@ -341,8 +374,6 @@ async def submit_fix_request(
     if not it or it.deleted_at:
         raise HTTPException(status_code=404, detail="Item not found")
     require_same_line(user, it)
-    if user.role == "OPERATOR":
-        require_same_shift_if_operator(user, it)
 
     precondition_if_unmodified_since(request, it.updated_at)
 
@@ -456,8 +487,6 @@ async def mark_scrap(
     if not it or it.deleted_at:
         raise HTTPException(status_code=404, detail="Item not found")
     require_same_line(user, it)
-    if user.role == "OPERATOR":
-        require_same_shift_if_operator(user, it)
 
     precondition_if_unmodified_since(request, it.updated_at)
 

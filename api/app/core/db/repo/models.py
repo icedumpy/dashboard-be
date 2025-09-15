@@ -14,7 +14,7 @@ from app.core.db.session import Base
 
 # --- Postgres ENUMs (already created by migrations) ---
 StationEnum      = PGEnum("ROLL", "BUNDLE", name="station",  create_type=False)
-ReviewTypeEnum   = PGEnum("DEFECT_FIX", "SCRAP_FROM_RECHECK", name="review_type",  create_type=False)
+ReviewTypeEnum   = PGEnum("DEFECT_FIX", "SCRAP_FROM_RECHECK", "REQUEST_STATUS_CHANGE", name="review_type",  create_type=False)
 ReviewStateEnum  = PGEnum("PENDING", "APPROVED", "REJECTED", name="review_state",  create_type=False)
 ImageKindEnum    = PGEnum("DETECTED", "FIX", "OTHER", name="image_kind",  create_type=False)
 
@@ -242,14 +242,12 @@ class Review(Base):
     reviewed_at: Mapped[Optional[str]] = mapped_column(DateTime(timezone=True))
     review_note: Mapped[Optional[str]] = mapped_column(Text)
 
-    defect_type_id: Mapped[Optional[int]] = mapped_column(ForeignKey("qc.defect_types.id"))
     reject_reason: Mapped[Optional[str]] = mapped_column(Text)
 
     created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     item: Mapped["Item"] = relationship(back_populates="reviews")
-    defect_type: Mapped[Optional["DefectType"]] = relationship()
 
 # =========================
 # Item images

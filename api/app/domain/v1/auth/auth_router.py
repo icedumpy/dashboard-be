@@ -14,11 +14,10 @@ from app.core.security.auth import (
 from app.core.db.repo.models import (
     User,
     ProductionLine,
-    Shift
 )
-from sqlalchemy.orm import selectinload
 from app.core.security.auth import get_current_user
 from app.core.db.repo.user.user_schema import LoginIn, TokenPair, RefreshIn, UserOut
+from app.utils.helper.helper import current_shift_window
 
 router = APIRouter()
 
@@ -83,9 +82,8 @@ async def me(
     db: AsyncSession = Depends(get_db),
 ):
     stmt = (
-        select(User, ProductionLine, Shift)
+        select(User, ProductionLine)
         .outerjoin(ProductionLine, User.line_id == ProductionLine.id)
-        .outerjoin(Shift,        User.shift_id == Shift.id)
         .where(User.id == current.id)
         .limit(1)
     )
@@ -95,7 +93,8 @@ async def me(
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
 
-    user, line, shift = row
+    user, line = row
+    shift_start, shift_end = current_shift_window()
 
     payload = {
         "id": user.id,
@@ -108,12 +107,9 @@ async def me(
             "code": getattr(line, "code", None),
             "name": getattr(line, "name", None),
         },
-        "shift": None if shift is None else {
-            "id": shift.id,
-            "code": getattr(shift, "code", None),
-            "name": getattr(shift, "name", None),
-            "start_time": getattr(shift, "start_time", None),
-            "end_time": getattr(shift, "end_time", None),
+        "shift": {
+            "start_time": shift_start.time(), 
+            "end_time":   shift_end.time(),
         },
     }
 

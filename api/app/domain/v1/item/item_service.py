@@ -1,5 +1,4 @@
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
+
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select, func, case, and_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,46 +8,17 @@ from sqlalchemy import or_, update, text, delete, insert
 from sqlalchemy.sql.elements import BinaryExpression
 from sqlalchemy.orm import selectinload
 from pathlib import PurePosixPath
+from typing import Optional, List, Dict, Any
+from fastapi import HTTPException, status
+from sqlalchemy import select, update, delete, insert, text
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
+from app.utils.helper.helper import current_shift_window, TZ
 from app.core.db.repo.models import EStation, EItemStatusCode, DefectType
-from app.core.db.repo.models import Item, ItemStatus, Review, Shift, User, ItemDefect, ItemEvent
+from app.core.db.repo.models import Item, ItemStatus, Review, ItemDefect, ItemEvent
 
 router = APIRouter()
-
-
-TZ = ZoneInfo("Asia/Bangkok")
-async def resolve_shift_window(db: AsyncSession, user: User):
-    """
-    Returns (start_utc, end_utc, start_local, end_local)
-    Uses user's shift if available: supports start/end hour or time fields.
-    Falls back to the full local day.
-    """
-    now_local = datetime.now(TZ)
-    # default: whole local day
-    start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
-    end_local = start_local + timedelta(days=1)
-
-    if getattr(user, "shift_id", None) and Shift is not None:
-        sh = await db.get(Shift, user.shift_id)
-        if sh:
-            # prefer integer hours if present, else time fields
-            s_hour = getattr(sh, "start_hour", None)
-            e_hour = getattr(sh, "end_hour", None)
-            s_time = getattr(sh, "start_time", None)
-            e_time = getattr(sh, "end_time", None)
-            if s_hour is not None and e_hour is not None:
-                start_local = now_local.replace(hour=int(s_hour), minute=0, second=0, microsecond=0)
-                end_local = now_local.replace(hour=int(e_hour), minute=0, second=0, microsecond=0)
-            elif s_time is not None and e_time is not None:
-                start_local = now_local.replace(hour=s_time.hour, minute=s_time.minute, second=0, microsecond=0)
-                end_local = now_local.replace(hour=e_time.hour, minute=e_time.minute, second=0, microsecond=0)
-            # handle cross-midnight
-            if end_local <= start_local:
-                end_local = end_local + timedelta(days=1)
-
-    start_utc = start_local.astimezone(ZoneInfo("UTC"))
-    end_utc = end_local.astimezone(ZoneInfo("UTC"))
-    return start_utc, end_utc
 
 StationT = Union[str, EStation]
 StatusListT = Optional[Sequence[Union[str, EItemStatusCode]]]
@@ -117,11 +87,7 @@ STATUS_MAP = {
 }
 
 
-from typing import Optional, List, Dict, Any
-from fastapi import HTTPException, status
-from sqlalchemy import select, update, delete, insert, text
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+
 
 async def get_missing_defect_type_ids(db: AsyncSession, ids: Iterable[int]) -> List[int]:
     uniq_ids: Set[int] = {int(x) for x in ids}
@@ -141,31 +107,38 @@ def norm(rel: Optional[str]) -> Optional[str]:
         raise HTTPException(status_code=400, detail="Invalid image path")
     return p
 
-async def operator_change_status_no_audit(
+async def operator_change_status(
     db: AsyncSession,
     *,
     item_id: int,
     new_status_business: str,
     actor_user_id: int,
+    actor_role: str,
     defect_type_ids: Optional[List[int]],
     meta: Optional[Dict[str, Any]] = None,
     guard_line_ids: Optional[List[int]] = None,
-    replace_defects_when_setting_defect: bool = False, 
+    replace_defects_when_setting_defect: bool = False,
 ) -> dict:
+    """
+    OPERATOR  → enqueue review (qc.reviews), no immediate change
+    QC        → apply change immediately (+ optional defect rows)
+    """
     try:
-        q = (
-            select(Item)
-            .options(selectinload(Item.status)) 
-            .where(Item.id == item_id)
-            .with_for_update()
-        )
-        res = await db.execute(q)
-        item: Optional[Item] = res.scalar_one_or_none()
+        # --- Load item (FOR UPDATE) ------------------------------------------------------
+        item = (
+            await db.execute(
+                select(Item)
+                .options(selectinload(Item.status))
+                .where(Item.id == item_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+
         if not item:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Item not found")
 
         if guard_line_ids is not None and item.line_id not in guard_line_ids:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "Operator cannot change status for this line")
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "User cannot change status for this line")
 
         try:
             target_code = STATUS_MAP[new_status_business]
@@ -174,68 +147,111 @@ async def operator_change_status_no_audit(
 
         target_status_id = await get_status_id(db, target_code)
 
-        current_status = item.status
-        current_code = getattr(current_status, "code", None) if current_status else None
-        is_normal_like = current_code in ("NORMAL", "QC_PASSED") 
-        going_to_defect = (target_code == "DEFECT")
+        current_code = getattr(item.status, "code", None) if item.status else None
+        is_normal_like = current_code in ("NORMAL", "QC_PASSED")
+        going_to_defect = target_code == "DEFECT"
         from_status_id = item.item_status_id
-        
+
         if target_code == current_code:
-            raise HTTPException(
-                    status.HTTP_400_BAD_REQUEST,
-                    f"Item is already set to {target_code}"
-                )
-        
-        
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Item is already set to {target_code}")
+
+        uniq_defects: List[int] = sorted({int(x) for x in (defect_type_ids or [])})
 
         if is_normal_like and going_to_defect:
-            if not defect_type_ids or len(defect_type_ids) == 0:
+            if not uniq_defects:
                 raise HTTPException(
                     status.HTTP_400_BAD_REQUEST,
-                    "defect_type_ids is required when changing NORMAL -> DEFECT"
+                    "defect_type_ids is required when changing NORMAL/QC_PASSED → DEFECT",
                 )
-            missing = await get_missing_defect_type_ids(db, defect_type_ids)
+            missing = await get_missing_defect_type_ids(db, uniq_defects)
             if missing:
-                raise HTTPException(
-                    status.HTTP_400_BAD_REQUEST,
-                    f"Invalid defect_type_ids (not found): {missing}"
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Invalid defect_type_ids (not found): {missing}")
+
+        event_details: Dict[str, Any] = {
+            "defect_type_ids": uniq_defects,
+            **({"meta": meta} if meta else {}),
+        }
+
+        if actor_role == "OPERATOR":
+            review_id = (
+                await db.execute(
+                    insert(Review)
+                    .values(
+                        item_id=item_id,
+                        review_type="REQUEST_STATUS_CHANGE",
+                        submitted_by=actor_user_id,
+                        submitted_at=datetime.now(TZ),
+                        state="PENDING",
+                    )
+                    .returning(Review.id)
                 )
+            ).scalar_one()
 
-        await db.execute(
-            update(Item)
-            .where(Item.id == item_id)
-            .values(item_status_id=target_status_id, updated_at=text("now()"))
-        )
+            await db.execute(
+                update(Item)
+                .where(Item.id == item_id)
+                .values(current_review_id=review_id, updated_at=func.now())
+            )
 
-        if going_to_defect and defect_type_ids is not None:
-            uniq_ids = list({int(x) for x in defect_type_ids})
+            db.add(
+                ItemEvent(
+                    item_id=item_id,
+                    actor_id=actor_user_id,
+                    event_type="REQUEST_STATUS_CHANGE",
+                    from_status_id=from_status_id,
+                    to_status_id=target_status_id,
+                    details=event_details,
+                )
+            )
 
-            if replace_defects_when_setting_defect:
-                await db.execute(delete(ItemDefect).where(ItemDefect.item_id == item_id))
+            await db.commit()
+            return {
+                "item_id": item_id,
+                "requested_status_code": target_code,
+                "message": "Change request submitted to QC for approval",
+                "defect_type_ids_requested": uniq_defects,
+            }
 
-            if uniq_ids:
-                rows = [{"item_id": item_id, "defect_type_id": dtid, "meta": meta or {}} for dtid in uniq_ids]
-                await db.execute(insert(ItemDefect).values(rows))
+        elif actor_role == "QC":
+            await db.execute(
+                update(Item)
+                .where(Item.id == item_id)
+                .values(item_status_id=target_status_id, updated_at=func.now())
+            )
 
-        ev = ItemEvent(
-            item_id=item_id,
-            actor_id=actor_user_id,
-            event_type="CHANGE_STATUS",
-            from_status_id=from_status_id,
-            to_status_id=target_status_id,
-        )
-        db.add(ev)
-        await db.commit()
+            if going_to_defect:
+                if replace_defects_when_setting_defect:
+                    await db.execute(delete(ItemDefect).where(ItemDefect.item_id == item_id))
+
+                if uniq_defects:
+                    rows = [{"item_id": item_id, "defect_type_id": dtid, "meta": meta or {}} for dtid in uniq_defects]
+                    await db.execute(insert(ItemDefect).values(rows))
+
+            db.add(
+                ItemEvent(
+                    item_id=item_id,
+                    actor_id=actor_user_id,
+                    event_type="CHANGE_STATUS",
+                    from_status_id=from_status_id,
+                    to_status_id=target_status_id,
+                    details=event_details,
+                )
+            )
+
+            await db.commit()
+            return {
+                "item_id": item_id,
+                "new_status_code": target_code,
+                "defect_type_ids_applied": uniq_defects if going_to_defect else [],
+            }
+
+        else:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Role not allowed")
+
     except Exception:
         await db.rollback()
         raise
-
-    return {
-        "item_id": item_id,
-        "new_status_code": target_code,
-        "defect_type_ids_applied": defect_type_ids if going_to_defect and defect_type_ids else [],
-    }
-
+    
 async def summarize_station(
     db: AsyncSession,
     *,
@@ -269,6 +285,12 @@ async def summarize_station(
         detected_from=detected_from,
         detected_to=detected_to,
     )
+    
+    
+    if detected_from is None and detected_to is None:
+        shift_start, shift_end = current_shift_window()
+        where_clauses.append(Item.created_at >= shift_start)
+        where_clauses.append(Item.created_at <= shift_end)
 
     q = (
         select(
