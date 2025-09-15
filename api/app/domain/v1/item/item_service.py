@@ -1,54 +1,18 @@
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
+
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select, func, case, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, Sequence, Union, List, Dict, Any, Set, Iterable
-from datetime import datetime
+from datetime import datetime, time, timedelta
 from sqlalchemy import or_, update, text, delete, insert
 from sqlalchemy.sql.elements import BinaryExpression
 from sqlalchemy.orm import selectinload
 from pathlib import PurePosixPath
 
 from app.core.db.repo.models import EStation, EItemStatusCode, DefectType
-from app.core.db.repo.models import Item, ItemStatus, Review, Shift, User, ItemDefect, ItemEvent
+from app.core.db.repo.models import Item, ItemStatus, Review, ItemDefect, ItemEvent
 
 router = APIRouter()
-
-
-TZ = ZoneInfo("Asia/Bangkok")
-async def resolve_shift_window(db: AsyncSession, user: User):
-    """
-    Returns (start_utc, end_utc, start_local, end_local)
-    Uses user's shift if available: supports start/end hour or time fields.
-    Falls back to the full local day.
-    """
-    now_local = datetime.now(TZ)
-    # default: whole local day
-    start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
-    end_local = start_local + timedelta(days=1)
-
-    if getattr(user, "shift_id", None) and Shift is not None:
-        sh = await db.get(Shift, user.shift_id)
-        if sh:
-            # prefer integer hours if present, else time fields
-            s_hour = getattr(sh, "start_hour", None)
-            e_hour = getattr(sh, "end_hour", None)
-            s_time = getattr(sh, "start_time", None)
-            e_time = getattr(sh, "end_time", None)
-            if s_hour is not None and e_hour is not None:
-                start_local = now_local.replace(hour=int(s_hour), minute=0, second=0, microsecond=0)
-                end_local = now_local.replace(hour=int(e_hour), minute=0, second=0, microsecond=0)
-            elif s_time is not None and e_time is not None:
-                start_local = now_local.replace(hour=s_time.hour, minute=s_time.minute, second=0, microsecond=0)
-                end_local = now_local.replace(hour=e_time.hour, minute=e_time.minute, second=0, microsecond=0)
-            # handle cross-midnight
-            if end_local <= start_local:
-                end_local = end_local + timedelta(days=1)
-
-    start_utc = start_local.astimezone(ZoneInfo("UTC"))
-    end_utc = end_local.astimezone(ZoneInfo("UTC"))
-    return start_utc, end_utc
 
 StationT = Union[str, EStation]
 StatusListT = Optional[Sequence[Union[str, EItemStatusCode]]]

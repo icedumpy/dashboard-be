@@ -3,6 +3,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_
 from jose import JWTError
+from datetime import datetime, time, timedelta
+from zoneinfo import ZoneInfo
+
 
 from app.core.db.session import get_db
 from app.core.security.auth import (
@@ -14,11 +17,31 @@ from app.core.security.auth import (
 from app.core.db.repo.models import (
     User,
     ProductionLine,
-    Shift
 )
-from sqlalchemy.orm import selectinload
 from app.core.security.auth import get_current_user
 from app.core.db.repo.user.user_schema import LoginIn, TokenPair, RefreshIn, UserOut
+
+TZ = ZoneInfo("Asia/Bangkok")
+
+def current_shift_window(now: datetime | None = None) -> tuple[datetime, datetime]:
+    now = (now.astimezone(TZ) if now.tzinfo else now.replace(tzinfo=TZ)) if now else datetime.now(TZ)
+    today = now.date()
+
+    day_start = datetime.combine(today, time(8, 0), TZ)
+    day_end   = datetime.combine(today, time(20, 0), TZ)
+
+    if day_start <= now < day_end:
+        return day_start, day_end
+
+    # - if now >= 20:00 → [20:00 today, 08:00 tomorrow)
+    # - if now  < 08:00 → [20:00 yesterday, 08:00 today)
+    if now >= day_end:
+        return day_end, day_start + timedelta(days=1)
+    else:
+        return day_end - timedelta(days=1), day_start
+
+
+
 
 router = APIRouter()
 
@@ -83,9 +106,8 @@ async def me(
     db: AsyncSession = Depends(get_db),
 ):
     stmt = (
-        select(User, ProductionLine, Shift)
+        select(User, ProductionLine)
         .outerjoin(ProductionLine, User.line_id == ProductionLine.id)
-        .outerjoin(Shift,        User.shift_id == Shift.id)
         .where(User.id == current.id)
         .limit(1)
     )
@@ -95,7 +117,8 @@ async def me(
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
 
-    user, line, shift = row
+    user, line = row
+    shift_start, shift_end = current_shift_window()
 
     payload = {
         "id": user.id,
@@ -108,12 +131,9 @@ async def me(
             "code": getattr(line, "code", None),
             "name": getattr(line, "name", None),
         },
-        "shift": None if shift is None else {
-            "id": shift.id,
-            "code": getattr(shift, "code", None),
-            "name": getattr(shift, "name", None),
-            "start_time": getattr(shift, "start_time", None),
-            "end_time": getattr(shift, "end_time", None),
+        "shift": {
+            "start_time": shift_start.time(), 
+            "end_time":   shift_end.time(),
         },
     }
 
