@@ -236,9 +236,11 @@ async def summarize_station(
         detected_to=detected_to,
     )
     
-    shift_start, shift_end = current_shift_window()
-    where_clauses.append(Item.created_at >= shift_start)
-    where_clauses.append(Item.created_at <= shift_end)
+    
+    if detected_from is None and detected_to is None:
+        shift_start, shift_end = current_shift_window()
+        where_clauses.append(Item.created_at >= shift_start)
+        where_clauses.append(Item.created_at <= shift_end)
 
     q = (
         select(

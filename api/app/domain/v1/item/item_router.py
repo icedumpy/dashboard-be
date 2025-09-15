@@ -3,7 +3,7 @@ from fastapi import APIRouter, Query, Depends, HTTPException, Request, status
 from typing import Optional, Annotated, List
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_, and_, literal, text
-from datetime import datetime
+from datetime import datetime, timedelta
 from app.core.config.config import settings
 from io import StringIO
 from app.core.db.session import get_db
@@ -19,7 +19,8 @@ from app.domain.v1.item.item_service import summarize_station, operator_change_s
 from app.utils.helper.helper import (
     require_role,
     require_same_line,
-    precondition_if_unmodified_since
+    precondition_if_unmodified_since,
+    TZ
 )
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import aliased
@@ -79,6 +80,19 @@ async def list_items(
 
     if detected_from: q = q.where(text("qc.items.detected_at >= :df")).params(df=detected_from)
     if detected_to: q = q.where(text("qc.items.detected_at <= :dt")).params(dt=detected_to)
+    
+    if detected_from is None and detected_to is None:
+        now = datetime.now(TZ)
+
+        if user.role == "VIEWER":
+            # subtract 365 days (approx 1 year)
+            dt = now - timedelta(days=365)
+            q = q.where(text("qc.items.detected_at >= :dt")).params(dt=dt)
+
+        elif user.role == "OPERATOR":
+            # subtract 30 days
+            dt = now - timedelta(days=30)
+            q = q.where(text("qc.items.detected_at >= :dt")).params(dt=dt)
     
 
     q = q.order_by(ItemStatus.display_order.asc(), Item.detected_at.desc(), Item.id.desc())
