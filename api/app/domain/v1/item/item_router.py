@@ -18,7 +18,6 @@ from app.domain.v1.item.item_service import summarize_station, operator_change_s
 from app.utils.helper.helper import (
     require_role,
     require_same_line,
-    require_same_shift_if_operator,
     precondition_if_unmodified_since
 )
 from fastapi.responses import StreamingResponse
@@ -343,8 +342,6 @@ async def submit_fix_request(
     if not it or it.deleted_at:
         raise HTTPException(status_code=404, detail="Item not found")
     require_same_line(user, it)
-    if user.role == "OPERATOR":
-        require_same_shift_if_operator(user, it)
 
     precondition_if_unmodified_since(request, it.updated_at)
 
@@ -458,8 +455,6 @@ async def mark_scrap(
     if not it or it.deleted_at:
         raise HTTPException(status_code=404, detail="Item not found")
     require_same_line(user, it)
-    if user.role == "OPERATOR":
-        require_same_shift_if_operator(user, it)
 
     precondition_if_unmodified_since(request, it.updated_at)
 

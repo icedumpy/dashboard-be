@@ -21,11 +21,6 @@ def require_same_line(user: User, item: Item):
     if user.line_id != item.line_id:
         raise HTTPException(status_code=403, detail="Cross-line operation not allowed")
 
-def require_same_shift_if_operator(user: User, item: Item):
-    if user.role == "OPERATOR" and user.shift_id is not None and user.shift_id != getattr(item, "shift_id", user.shift_id):
-        # item has no shift; we check only user's shift rule as you requested
-        raise HTTPException(status_code=403, detail="Operator shift mismatch")
-
 def precondition_if_unmodified_since(request: Request, last_updated_at: datetime):
     ims = request.headers.get("If-Unmodified-Since")
     if not ims:
