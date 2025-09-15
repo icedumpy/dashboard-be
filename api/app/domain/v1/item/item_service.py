@@ -3,12 +3,18 @@ from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select, func, case, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, Sequence, Union, List, Dict, Any, Set, Iterable
-from datetime import datetime, time, timedelta
+from datetime import datetime
 from sqlalchemy import or_, update, text, delete, insert
 from sqlalchemy.sql.elements import BinaryExpression
 from sqlalchemy.orm import selectinload
 from pathlib import PurePosixPath
+from typing import Optional, List, Dict, Any
+from fastapi import HTTPException, status
+from sqlalchemy import select, update, delete, insert, text
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
+from app.utils.helper.helper import current_shift_window
 from app.core.db.repo.models import EStation, EItemStatusCode, DefectType
 from app.core.db.repo.models import Item, ItemStatus, Review, ItemDefect, ItemEvent
 
@@ -81,11 +87,7 @@ STATUS_MAP = {
 }
 
 
-from typing import Optional, List, Dict, Any
-from fastapi import HTTPException, status
-from sqlalchemy import select, update, delete, insert, text
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+
 
 async def get_missing_defect_type_ids(db: AsyncSession, ids: Iterable[int]) -> List[int]:
     uniq_ids: Set[int] = {int(x) for x in ids}
@@ -233,6 +235,10 @@ async def summarize_station(
         detected_from=detected_from,
         detected_to=detected_to,
     )
+    
+    shift_start, shift_end = current_shift_window()
+    where_clauses.append(Item.created_at >= shift_start)
+    where_clauses.append(Item.created_at <= shift_end)
 
     q = (
         select(

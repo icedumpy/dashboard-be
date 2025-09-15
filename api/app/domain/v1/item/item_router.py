@@ -13,6 +13,7 @@ from app.core.db.repo.models import (
     Review, ItemImage, ItemEvent,
     EStation,EItemStatusCode,User
 )
+
 from app.domain.v1.item.item_schema import FixRequestBody, UpdateItemStatusBody, ItemReportRequest, ItemEventOut, ActorOut
 from app.domain.v1.item.item_service import summarize_station, operator_change_status_no_audit, norm
 from app.utils.helper.helper import (
@@ -53,7 +54,7 @@ async def list_items(
     require_role(user, ["VIEWER", "OPERATOR", "INSPECTOR"])
     page_size = max(1, min(page_size, 100))
     offset = (page - 1) * page_size
-
+    
     q = select(Item).where(Item.deleted_at.is_(None))
 
     q = q.join(ItemStatus, Item.item_status_id == ItemStatus.id)
@@ -78,6 +79,7 @@ async def list_items(
 
     if detected_from: q = q.where(text("qc.items.detected_at >= :df")).params(df=detected_from)
     if detected_to: q = q.where(text("qc.items.detected_at <= :dt")).params(dt=detected_to)
+    
 
     q = q.order_by(ItemStatus.display_order.asc(), Item.detected_at.desc(), Item.id.desc())
 
@@ -111,7 +113,6 @@ async def list_items(
         
         st = (await db.execute(select(ItemStatus.code).where(ItemStatus.id == it.item_status_id))).scalar()
 
-        
         if it.station == EStation.BUNDLE:
             q = (
                 select(Item)
@@ -285,27 +286,43 @@ async def get_item_history(
     )
 
     rows = (await db.execute(q)).all()
-    # if not rows:
-    #     raise HTTPException(status.HTTP_404_NOT_FOUND, detail="No events found for this item")
+    
+    rows = (await db.execute(q)).all()
 
-    return [
-        ItemEventOut(
+    data: list[ItemEventOut] = []
+    for r in rows:
+        defects: list[str] = []
+
+        if r.from_status_code == "DEFECT" or r.to_status_code == "DEFECT":
+            result = await db.execute(
+                select(DefectType.name_th)
+                .join(ItemDefect, DefectType.id == ItemDefect.defect_type_id)
+                .where(ItemDefect.item_id == item_id)
+            )
+            defects = result.unique().scalars().all()
+
+        v = ItemEventOut(
             id=r.id,
             event_type=r.event_type,
             from_status_id=r.from_status_id,
             from_status_code=r.from_status_code,
             to_status_id=r.to_status_id,
             to_status_code=r.to_status_code,
-            created_at=r.created_at.isoformat() if hasattr(r.created_at, "isoformat") else str(r.created_at),
-            actor=ActorOut(                
+            created_at=(
+                r.created_at.isoformat()
+                if hasattr(r.created_at, "isoformat")
+                else str(r.created_at)
+            ),
+            defects=defects,
+            actor=ActorOut(
                 id=r.user_id,
                 username=r.username,
                 display_name=r.display_name,
             ),
         )
-        for r in rows
-    ]
+        data.append(v)
 
+    return data
 
 @router.patch("/{item_id}/status")
 async def change_item_status(
