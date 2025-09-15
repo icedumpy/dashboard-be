@@ -554,19 +554,9 @@ async def get_csv_item_report(
     line_code = await db.scalar(select(ProductionLine.code).where(ProductionLine.id == body.line_id))
     line_code = str(line_code or body.line_id)
 
-    defects_subq = (
-        select(
-            ItemDefect.item_id.label("item_id"),
-            func.string_agg(func.distinct(DefectType.name_th), literal(", ")).label("defects_csv"),
-        )
-        .join(DefectType, DefectType.id == ItemDefect.defect_type_id)
-        .group_by(ItemDefect.item_id)
-        .subquery()
-    )
+    roll_match = aliased(Item)
 
-    roll_match = aliased(Item) 
-
-    q = (
+    base = (
         select(
             Item.id.label("item_id"),
             Item.station,
@@ -579,22 +569,17 @@ async def get_csv_item_report(
             Item.detected_at,
             Item.ai_note,
             ItemStatus.code.label("status_code"),
-            defects_subq.c.defects_csv,
             roll_match.product_code.label("r_product_code"),
             roll_match.job_order_number.label("r_job_order_number"),
             roll_match.roll_width.label("r_roll_width"),
+            # latest per item by detected_at
+            func.row_number().over(
+                partition_by=Item.id,
+                order_by=Item.detected_at.desc()
+            ).label("rn"),
         )
         .join(ItemStatus, ItemStatus.id == Item.item_status_id)
-        .outerjoin(defects_subq, defects_subq.c.item_id == Item.id)
-        .where(
-            Item.line_id == body.line_id,
-            Item.station == body.station.value,
-            Item.deleted_at.is_(None),
-        )
-    )
-
-    if body.station == EStation.BUNDLE:
-        q = q.outerjoin(
+        .outerjoin(
             roll_match,
             and_(
                 roll_match.station == EStation.ROLL.value,
@@ -603,45 +588,84 @@ async def get_csv_item_report(
                 roll_match.deleted_at.is_(None),
             ),
         )
+        .where(
+            Item.line_id == body.line_id,
+            Item.station == body.station.value,
+            Item.deleted_at.is_(None),
+        )
+    )
 
+    # ---- 2) Filters (kept equivalent to your code) ----
     if body.product_code:
         like = f"%{body.product_code}%"
         if body.station == EStation.BUNDLE:
-            q = q.where(or_(Item.product_code.ilike(like), roll_match.product_code.ilike(like)))
+            base = base.where(or_(Item.product_code.ilike(like), roll_match.product_code.ilike(like)))
         else:
-            q = q.where(Item.product_code.ilike(like))
+            base = base.where(Item.product_code.ilike(like))
 
     if body.number:
         like = f"%{body.number}%"
-        q = q.where(or_(Item.roll_number.ilike(like), Item.bundle_number.ilike(like)))
+        base = base.where(or_(Item.roll_number.ilike(like), Item.bundle_number.ilike(like)))
 
     if body.job_order_number:
         like = f"%{body.job_order_number}%"
         if body.station == EStation.BUNDLE:
-            q = q.where(or_(Item.job_order_number.ilike(like), roll_match.job_order_number.ilike(like)))
+            base = base.where(or_(Item.job_order_number.ilike(like), roll_match.job_order_number.ilike(like)))
         else:
-            q = q.where(Item.job_order_number.ilike(like))
+            base = base.where(Item.job_order_number.ilike(like))
 
     if body.roll_width_min is not None or body.roll_width_max is not None:
         width_expr = func.coalesce(Item.roll_width, roll_match.roll_width) if body.station == EStation.BUNDLE else Item.roll_width
         if body.roll_width_min is not None:
-            q = q.where(width_expr >= body.roll_width_min)
+            base = base.where(width_expr >= body.roll_width_min)
         if body.roll_width_max is not None:
-            q = q.where(width_expr <= body.roll_width_max)
+            base = base.where(width_expr <= body.roll_width_max)
 
     if body.status:
-        q = q.where(ItemStatus.code.in_([s.value for s in body.status]))
+        base = base.where(ItemStatus.code.in_([s.value for s in body.status]))
 
     if body.detected_from:
-        q = q.where(Item.detected_at >= body.detected_from)
+        base = base.where(Item.detected_at >= body.detected_from)
     if body.detected_to:
-        q = q.where(Item.detected_at <= body.detected_to)
+        base = base.where(Item.detected_at <= body.detected_to)
 
-    q = q.distinct(Item.id).order_by(Item.id, Item.detected_at.desc(), Item.id.desc())
+    base_subq = base.subquery(name="base")
 
-    rows = (await db.execute(q)).all()
+    defects_subq = (
+        select(
+            ItemDefect.item_id.label("item_id"),
+            func.string_agg(func.distinct(DefectType.name_th), literal(", ")).label("defects_csv"),
+        )
+        .join(DefectType, DefectType.id == ItemDefect.defect_type_id)
+        .where(ItemDefect.item_id.in_(select(base_subq.c.item_id)))   # narrow scope
+        .group_by(ItemDefect.item_id)
+        .subquery()
+    )
 
-    rows.sort(key=lambda r: (r.detected_at or datetime.min, r.item_id), reverse=True)
+    final_q = (
+        select(
+            base_subq.c.item_id,
+            base_subq.c.station,
+            base_subq.c.line_id,
+            base_subq.c.product_code,
+            base_subq.c.roll_number,
+            base_subq.c.bundle_number,
+            base_subq.c.job_order_number,
+            base_subq.c.roll_width,
+            base_subq.c.detected_at,
+            base_subq.c.ai_note,
+            base_subq.c.status_code,
+            defects_subq.c.defects_csv,
+            base_subq.c.r_product_code,
+            base_subq.c.r_job_order_number,
+            base_subq.c.r_roll_width,
+        )
+        .outerjoin(defects_subq, defects_subq.c.item_id == base_subq.c.item_id)
+        .where(base_subq.c.rn == 1)
+        .order_by(base_subq.c.detected_at.desc(), base_subq.c.item_id.desc())
+    )
+
+    result = await db.stream(final_q)
 
     header = [
         "PRODUCT CODE",
@@ -668,23 +692,37 @@ async def get_csv_item_report(
 
         return [product_code_val or "", num_val or "", job_order_val or "", width_out, ts, status_str]
 
-    def csv_iter():
+    async def acsv_iter():
         buf = StringIO()
-        writer = csv.writer(buf)
-        writer.writerow(header); yield buf.getvalue(); buf.seek(0); buf.truncate(0)
-        for r in rows:
-            writer.writerow(row_to_list(r))
-            yield buf.getvalue(); buf.seek(0); buf.truncate(0)
+        writer = csv.writer(buf, lineterminator="\n")
 
-    today = datetime.now().strftime("%Y%m%d")
+        writer.writerow(header)
+        yield buf.getvalue()
+        buf.seek(0); buf.truncate(0)
+
+        THRESHOLD = 256 * 1024 
+        async for r in result:
+            writer.writerow(row_to_list(r))
+            if buf.tell() >= THRESHOLD:
+                yield buf.getvalue()
+                buf.seek(0); buf.truncate(0)
+
+        leftover = buf.getvalue()
+        if leftover:
+            yield leftover
+
+    today = datetime.now(TZ).strftime("%Y%m%d")
     filename = f"items_{body.station.value.lower()}_line{line_code}_{today}.csv"
 
     return StreamingResponse(
-        csv_iter(),
+        acsv_iter(),
         media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "no-store"},
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
     )
-
+    
 def _status_label(code: str, defects_csv: Optional[str], ai_note: Optional[str]) -> str:
     if code == "DEFECT":
         return f"Defect{': ' + defects_csv if defects_csv else ''}"
