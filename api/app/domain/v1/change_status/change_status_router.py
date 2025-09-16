@@ -229,6 +229,7 @@ async def list_status_change_requests(
     if station is not None:
         # If you use an enum for Item.station, map here: Item.station == StationEnum[station]
         where_clauses.append(Item.station == station)
+    where_clauses.append(StatusChangeRequest.state == "PENDING")
 
     # ----- list page (with eager-load to avoid MissingGreenlet) -----
     list_q = (
