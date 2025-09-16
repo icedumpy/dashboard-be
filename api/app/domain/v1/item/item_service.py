@@ -1,16 +1,12 @@
 
 from fastapi import APIRouter, HTTPException, status
-from sqlalchemy import select, func, case, and_
-from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, Sequence, Union, List, Dict, Any, Set, Iterable
 from datetime import datetime
-from sqlalchemy import or_, update, text, delete, insert
-from sqlalchemy.sql.elements import BinaryExpression
-from sqlalchemy.orm import selectinload
 from pathlib import PurePosixPath
-from typing import Optional, List, Dict, Any
-from fastapi import HTTPException, status
-from sqlalchemy import select, update, delete, insert, text
+
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import BinaryExpression
+from sqlalchemy import select, update, delete, insert, or_, func, case, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -106,6 +102,21 @@ def norm(rel: Optional[str]) -> Optional[str]:
     if ".." in p:
         raise HTTPException(status_code=400, detail="Invalid image path")
     return p
+
+def status_label(code: str, defects_csv: Optional[str], ai_note: Optional[str]) -> str:
+    if code == "DEFECT":
+        return f"Defect{': ' + defects_csv if defects_csv else ''}"
+    if code == "SCRAP":
+        return f"Scrap{(' (' + ai_note + ')') if ai_note else ''}"
+    if code == "QC_PASSED":
+        return "QC Passed"
+    if code == "NORMAL":
+        return "Normal"
+    if code == "RECHECK":
+        return "Recheck"
+    if code == "REJECTED":
+        return "Rejected"
+    return code or ""
 
 async def operator_change_status(
     db: AsyncSession,

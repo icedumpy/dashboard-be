@@ -1,21 +1,26 @@
 # app/domain/v1/items_router.py
 from fastapi import APIRouter, Query, Depends, HTTPException, Request, status
 from typing import Optional, Annotated, List
+
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, or_, and_, literal, text
+from sqlalchemy import select, func, or_, and_, literal, text, update, insert
+from sqlalchemy.orm import aliased
+
 from datetime import datetime, timedelta
 from app.core.config.config import settings
 from io import StringIO
+
 from app.core.db.session import get_db
 from app.core.security.auth import get_current_user
 from app.core.db.repo.models import (
     Item, ItemStatus, ProductionLine, ItemDefect, DefectType,
     Review, ItemImage, ItemEvent,
+    StatusChangeRequest,
     EStation,EItemStatusCode,User
 )
 
 from app.domain.v1.item.item_schema import FixRequestBody, UpdateItemStatusBody, ItemReportRequest, ItemEventOut, ActorOut
-from app.domain.v1.item.item_service import summarize_station, operator_change_status, norm
+from app.domain.v1.item.item_service import summarize_station, status_label, norm
 from app.utils.helper.helper import (
     require_role,
     require_same_line,
@@ -23,7 +28,6 @@ from app.utils.helper.helper import (
     TZ
 )
 from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import aliased
 import csv
 import asyncio
 import logging
@@ -153,6 +157,11 @@ async def list_items(
             review_data = (await db.execute(select(Review).where(Review.id == it.current_review_id))).scalar()
             is_pending_review = review_data.state == "PENDING"
 
+        change_status_data = (await db.execute(select(StatusChangeRequest).where(and_(StatusChangeRequest.item_id == it.id, StatusChangeRequest.state == "PENDING")))).scalar()
+        is_changing_status_pending = True if change_status_data is not None else False
+        
+
+
         data.append({
             "id": it.id,
             "station": it.station,
@@ -170,6 +179,7 @@ async def list_items(
             "scrap_confirmed_at": it.scrap_confirmed_at.isoformat() if it.scrap_confirmed_at else None,
             "current_review_id": it.current_review_id,
             "is_pending_review": is_pending_review,
+            "is_changing_status_pending": is_changing_status_pending,
             "images": imgs,
             "defects": defs,
         })
@@ -341,28 +351,28 @@ async def get_item_history(
 
     return data
 
-@router.patch("/{item_id}/status")
-async def change_item_status(
-    item_id: int,
-    body: UpdateItemStatusBody,
-    db: AsyncSession = Depends(get_db),
-    user = Depends(get_current_user),
-):
-    require_role(user, ["OPERATOR", "INSPECTOR"])
+# @router.patch("/{item_id}/status")
+# async def change_item_status(
+#     item_id: int,
+#     body: UpdateItemStatusBody,
+#     db: AsyncSession = Depends(get_db),
+#     user = Depends(get_current_user),
+# ):
+#     require_role(user, ["OPERATOR", "INSPECTOR"])
 
-    allowed_line_ids = getattr(user, "line_ids", None)
+#     allowed_line_ids = getattr(user, "line_ids", None)
 
-    result = await operator_change_status(
-        db,
-        item_id=item_id,
-        new_status_business=body.status,
-        actor_user_id=user.id,
-        actor_role=user.role,
-        defect_type_ids=body.defect_type_ids,
-        meta=body.meta,
-        guard_line_ids=allowed_line_ids,
-    )
-    return result
+#     result = await operator_change_status(
+#         db,
+#         item_id=item_id,
+#         new_status_business=body.status,
+#         actor_user_id=user.id,
+#         actor_role=user.role,
+#         defect_type_ids=body.defect_type_ids,
+#         meta=body.meta,
+#         guard_line_ids=allowed_line_ids,
+#     )
+#     return result
 
 @router.post("/{item_id}/fix-request")
 async def submit_fix_request(
@@ -697,7 +707,7 @@ async def get_csv_item_report(
             width_val = width_val if width_val is not None else m.get("r_roll_width")
 
         num_val = m.get("roll_number") if body.station == EStation.ROLL else m.get("bundle_number")
-        status_str = _status_label(m.get("status_code"), m.get("defects_csv"), m.get("ai_note"))
+        status_str = status_label(m.get("status_code"), m.get("defects_csv"), m.get("ai_note"))
         dt = m.get("detected_at")
         ts = dt.isoformat(timespec="seconds") if dt else ""
         width_out = "" if width_val is None else str(width_val)
@@ -754,17 +764,3 @@ async def get_csv_item_report(
     )
 
 
-def _status_label(code: str, defects_csv: Optional[str], ai_note: Optional[str]) -> str:
-    if code == "DEFECT":
-        return f"Defect{': ' + defects_csv if defects_csv else ''}"
-    if code == "SCRAP":
-        return f"Scrap{(' (' + ai_note + ')') if ai_note else ''}"
-    if code == "QC_PASSED":
-        return "QC Passed"
-    if code == "NORMAL":
-        return "Normal"
-    if code == "RECHECK":
-        return "Recheck"
-    if code == "REJECTED":
-        return "Rejected"
-    return code or ""

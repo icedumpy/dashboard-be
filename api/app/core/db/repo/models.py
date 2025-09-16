@@ -1,7 +1,7 @@
 # app/core/db/repo/qc/models.py
 from __future__ import annotations
 from enum import Enum
-from typing import Optional, List
+from typing import Optional, List, Dict
 from sqlalchemy import (
     String, Boolean, ForeignKey, UniqueConstraint, Numeric, Text,
     func, Integer, Index
@@ -145,7 +145,6 @@ class Item(Base):
     scrap_confirmed_by: Mapped[Optional[int]] = mapped_column(ForeignKey('user.users.id'))
     scrap_confirmed_at: Mapped[Optional[str]] = mapped_column(DateTime(timezone=True))
 
-    # NOTE: migration didn't declare FK; keep as plain column to match DB
     current_review_id: Mapped[Optional[int]] = mapped_column(BIGINT)
 
     created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -286,3 +285,54 @@ class ItemEvent(Base):
     created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     item: Mapped["Item"] = relationship(back_populates="events")
+
+class StatusChangeRequest(Base):
+    __tablename__ = "status_change_requests"
+    __table_args__ = {"schema": "qc"}
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+
+    item_id: Mapped[int] = mapped_column(
+        ForeignKey("qc.items.id", ondelete="CASCADE"), nullable=False
+    )
+    from_status_id: Mapped[int] = mapped_column(
+        ForeignKey("qc.item_statuses.id"), nullable=False
+    )
+    to_status_id: Mapped[int] = mapped_column(
+        ForeignKey("qc.item_statuses.id"), nullable=False
+    )
+
+    state: Mapped[str] = mapped_column(ReviewStateEnum, nullable=False, default="PENDING")
+
+    requested_by: Mapped[int] = mapped_column(
+        ForeignKey("user.users.id"), nullable=False
+    )
+    requested_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    approved_by: Mapped[Optional[int]] = mapped_column(ForeignKey("user.users.id"))
+    approved_at: Mapped[Optional[str]] = mapped_column(DateTime(timezone=True))
+
+    reason: Mapped[Optional[str]] = mapped_column(Text)
+    meta: Mapped[Optional[Dict]] = mapped_column(JSONB)
+
+    defects: Mapped[List["StatusChangeRequestDefect"]] = relationship(
+        back_populates="request", cascade="all, delete-orphan"
+    )
+
+
+class StatusChangeRequestDefect(Base):
+    __tablename__ = "status_change_request_defects"
+    __table_args__ = {"schema": "qc"}
+
+    request_id: Mapped[int] = mapped_column(
+        ForeignKey("qc.status_change_requests.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    defect_type_id: Mapped[int] = mapped_column(
+        ForeignKey("qc.defect_types.id"), primary_key=True
+    )
+
+    request: Mapped["StatusChangeRequest"] = relationship(back_populates="defects")
+    
