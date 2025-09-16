@@ -363,17 +363,17 @@ async def decide_fix(
     if decision not in ("APPROVED", "REJECTED"):
         raise HTTPException(status_code=400, detail="Invalid decision")
 
-    request_event = (
-        await db.execute(
-            select(ItemEvent)
-            .where(
-                ItemEvent.item_id == it.id,
-                ItemEvent.event_type == "REQUEST_STATUS_CHANGE",
-            )
-            .order_by(ItemEvent.created_at.desc(), ItemEvent.id.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+    # request_event = (
+    #     await db.execute(
+    #         select(ItemEvent)
+    #         .where(
+    #             ItemEvent.item_id == it.id,
+    #             ItemEvent.event_type == "REQUEST_STATUS_CHANGE",
+    #         )
+    #         .order_by(ItemEvent.created_at.desc(), ItemEvent.id.desc())
+    #         .limit(1)
+    #     )
+    # ).scalar_one_or_none()
 
     rv.reviewed_by = user.id
     rv.reviewed_at = datetime.now(TH)
@@ -382,41 +382,14 @@ async def decide_fix(
         rv.state = "APPROVED"
         rv.review_note = note
 
-        if rv.review_type == "REQUEST_STATUS_CHANGE" and request_event:
-            new_status_id = request_event.to_status_id
-            it.item_status_id = new_status_id
-
-            details = request_event.details or {}
-            defect_ids = details.get("defect_type_ids") or []
-
-            if defect_ids:
-                uniq_ids = sorted({int(x) for x in defect_ids if x is not None})
-
-                rows = [
-                    {"item_id": rv.item_id, "defect_type_id": dtid, "meta": {}}
-                    for dtid in uniq_ids
-                ]
-
-                await db.execute(insert(ItemDefect).values(rows))
-
-            db.add(
-                ItemEvent(
-                    item_id=it.id,
-                    actor_id=user.id,
-                    event_type="FIX_DECISION_APPROVED",
-                    from_status_id=request_event.from_status_id,
-                    to_status_id=request_event.to_status_id,
-                )
+        new_status_id = (
+            await db.execute(
+                select(ItemStatus.id).where(ItemStatus.code == "QC_PASSED")
             )
-        else:
-            new_status_id = (
-                await db.execute(
-                    select(ItemStatus.id).where(ItemStatus.code == "QC_PASSED")
-                )
-            ).scalar_one()
-            it.item_status_id = new_status_id
+        ).scalar_one()
+        it.item_status_id = new_status_id
 
-            db.add(
+        db.add(
                 ItemEvent(
                     item_id=it.id,
                     actor_id=user.id,
@@ -442,7 +415,7 @@ async def decide_fix(
                 item_id=it.id,
                 actor_id=user.id,
                 event_type="FIX_DECISION_REJECTED",
-                from_status_id=request_event.from_status_id if request_event else None,
+                from_status_id=it.item_status_id,
                 to_status_id=rej_status_id,
             )
         )

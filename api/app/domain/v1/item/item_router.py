@@ -15,6 +15,7 @@ from app.core.security.auth import get_current_user
 from app.core.db.repo.models import (
     Item, ItemStatus, ProductionLine, ItemDefect, DefectType,
     Review, ItemImage, ItemEvent,
+    StatusChangeRequest,
     EStation,EItemStatusCode,User
 )
 
@@ -156,6 +157,11 @@ async def list_items(
             review_data = (await db.execute(select(Review).where(Review.id == it.current_review_id))).scalar()
             is_pending_review = review_data.state == "PENDING"
 
+        change_status_data = (await db.execute(select(StatusChangeRequest).where(and_(StatusChangeRequest.item_id == it.id, StatusChangeRequest.state == "PENDING")))).scalar()
+        is_changing_status_pending = True if change_status_data is not None else False
+        
+
+
         data.append({
             "id": it.id,
             "station": it.station,
@@ -173,6 +179,7 @@ async def list_items(
             "scrap_confirmed_at": it.scrap_confirmed_at.isoformat() if it.scrap_confirmed_at else None,
             "current_review_id": it.current_review_id,
             "is_pending_review": is_pending_review,
+            "is_changing_status_pending": is_changing_status_pending,
             "images": imgs,
             "defects": defs,
         })
