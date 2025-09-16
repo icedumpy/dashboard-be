@@ -6,6 +6,7 @@ from .image.image_router import router as image_router
 from .production_line.production_line_router import router as production_line_router
 from .review.review_router import router as review_router
 from .defect_type.defect_type_router import router as defect_type_router
+from .change_status.change_status_router import router as change_status_router
 
 router = APIRouter()
 
@@ -19,3 +20,4 @@ router.include_router(image_router, prefix="/image", tags=["upload"])
 router.include_router(production_line_router, prefix="/production_line", tags=["line"])
 router.include_router(review_router, prefix="/review", tags=["review"])
 router.include_router(defect_type_router, prefix="/defect_type", tags=["defect_type"])
+router.include_router(change_status_router, prefix="/change_status", tags=["chnage_status"])
