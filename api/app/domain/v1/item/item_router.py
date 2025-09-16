@@ -155,7 +155,7 @@ async def list_items(
 
         if it.current_review_id != None:
             review_data = (await db.execute(select(Review).where(Review.id == it.current_review_id))).scalar()
-            is_pending_review = review_data.state == "PENDING"
+            is_pending_review = review_data.state == "PENDING" if review_data is not None else False
 
         change_status_data = (await db.execute(select(StatusChangeRequest).where(and_(StatusChangeRequest.item_id == it.id, StatusChangeRequest.state == "PENDING")))).scalar()
         is_changing_status_pending = True if change_status_data is not None else False
