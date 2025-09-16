@@ -240,7 +240,7 @@ async def list_status_change_requests(
     )
     list_q = (
         list_q.options(selectinload(StatusChangeRequest.defects))
-        .order_by(StatusChangeRequest.requested_at.desc())
+        .order_by(StatusChangeRequest.state.asc(), StatusChangeRequest.requested_at.desc())
         .offset(offset)
         .limit(page_size)
     )
