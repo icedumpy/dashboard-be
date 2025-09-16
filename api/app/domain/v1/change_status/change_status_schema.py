@@ -1,6 +1,8 @@
 from pydantic import BaseModel, Field
 from typing import List, Optional, Literal, Any, Dict
 
+
+
 class StatusChangeRequestCreate(BaseModel):
     item_id: int
     # from_status_id: int
@@ -39,3 +41,20 @@ class DecisionRequestBody(BaseModel):
             }
         }
 
+
+
+class SummaryOut(BaseModel):
+    roll: int
+    bundle: int
+    total: int
+
+class PaginationOut(BaseModel):
+    page: int
+    page_size: int
+    total: int
+    total_pages: int
+
+class ListResponseOut(BaseModel):
+    data: List[StatusChangeRequestOut]
+    summary: SummaryOut
+    pagination: PaginationOut

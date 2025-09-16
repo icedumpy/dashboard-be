@@ -1,16 +1,17 @@
 # app/domain/v1/items_router.py
-from fastapi import APIRouter, Depends, HTTPException, status
-from typing import List
+from fastapi import APIRouter, Depends, HTTPException, status, Query
+from typing import List, Optional, Literal
+import math
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, insert, delete, text
+from sqlalchemy import select, update, insert, delete, text, and_
 from sqlalchemy.orm import selectinload
 from sqlalchemy.sql import func
 
 from app.core.db.session import get_db
 from app.core.security.auth import get_current_user
-from app.core.db.repo.models import StatusChangeRequest, StatusChangeRequestDefect, ItemEvent, Item, ItemDefect, DefectType, ItemStatus,ReviewStateEnum
-from app.domain.v1.change_status.change_status_schema import StatusChangeRequestOut, DecisionRequestBody, StatusChangeRequestCreate
+from app.core.db.repo.models import StatusChangeRequest, StatusChangeRequestDefect, ItemEvent, Item, ItemDefect, DefectType, ItemStatus
+from app.domain.v1.change_status.change_status_schema import StatusChangeRequestOut, DecisionRequestBody, StatusChangeRequestCreate, ListResponseOut, SummaryOut, PaginationOut, ListResponseOut
 from app.utils.helper.helper import (
     require_role,
 )
@@ -205,45 +206,113 @@ async def create_status_change_request(
         await db.rollback()
         raise
     
-    
-@router.get("", response_model=List[StatusChangeRequestOut])
+@router.get("", response_model=ListResponseOut)
 async def list_status_change_requests(
+    page: int = Query(1, ge=1, description="1-based page index"),
+    page_size: int = Query(10, ge=1, le=100, description="items per page (max 100)"),
+    line_id: Optional[int] = Query(None, description="filter by production line id"),
+    station: Optional[Literal["ROLL", "BUNDLE"]] = Query(
+        None, description='filter by station type: "ROLL" or "BUNDLE"'
+    ),
     db: AsyncSession = Depends(get_db),
     user = Depends(get_current_user),
 ):
     require_role(user, ["OPERATOR", "INSPECTOR"])
 
-    q = (
+    page_size = max(1, min(page_size, 100))
+    offset = (page - 1) * page_size
+
+    # ----- build filters once -----
+    where_clauses = []
+    if line_id is not None:
+        where_clauses.append(Item.line_id == line_id)
+    if station is not None:
+        # If you use an enum for Item.station, map here: Item.station == StationEnum[station]
+        where_clauses.append(Item.station == station)
+
+    # ----- list page (with eager-load to avoid MissingGreenlet) -----
+    list_q = (
         select(StatusChangeRequest)
-        .options(selectinload(StatusChangeRequest.defects))  # eager-load to avoid lazy IO
-        .order_by(StatusChangeRequest.requested_at.desc())
+        .join(Item, Item.id == StatusChangeRequest.item_id)
+        .where(and_(*where_clauses)) if where_clauses else
+        select(StatusChangeRequest)
+        .join(Item, Item.id == StatusChangeRequest.item_id)
     )
-    res = await db.execute(q)
-    rows: list[StatusChangeRequest] = res.scalars().all()
+    list_q = (
+        list_q.options(selectinload(StatusChangeRequest.defects))
+        .order_by(StatusChangeRequest.requested_at.desc())
+        .offset(offset)
+        .limit(page_size)
+    )
 
-    out: list[StatusChangeRequestOut] = []
-    for r in rows:
-        out.append(
-            StatusChangeRequestOut(
-                id=r.id,
-                item_id=r.item_id,
-                from_status_id=r.from_status_id,
-                to_status_id=r.to_status_id,
-                state=r.state,
-                requested_by=r.requested_by,
-                requested_at=r.requested_at.isoformat()
-                    if hasattr(r.requested_at, "isoformat") else str(r.requested_at),
-                approved_by=r.approved_by,
-                approved_at=r.approved_at.isoformat()
-                    if r.approved_at and hasattr(r.approved_at, "isoformat")
-                    else (str(r.approved_at) if r.approved_at else None),
-                reason=r.reason,
-                meta=r.meta,
-                defect_type_ids=[d.defect_type_id for d in (r.defects or [])],
-            )
+    rows = (await db.execute(list_q)).scalars().all()
+
+    data: List[StatusChangeRequestOut] = [
+        StatusChangeRequestOut(
+            id=r.id,
+            item_id=r.item_id,
+            from_status_id=r.from_status_id,
+            to_status_id=r.to_status_id,
+            state=r.state,
+            requested_by=r.requested_by,
+            requested_at=r.requested_at.isoformat()
+                if hasattr(r.requested_at, "isoformat") else str(r.requested_at),
+            approved_by=r.approved_by,
+            approved_at=r.approved_at.isoformat()
+                if r.approved_at and hasattr(r.approved_at, "isoformat")
+                else (str(r.approved_at) if r.approved_at else None),
+            reason=r.reason,
+            meta=r.meta,
+            defect_type_ids=[d.defect_type_id for d in (r.defects or [])],
         )
-    return out
+        for r in rows
+    ]
 
+    # ----- total & total_pages (respect filters) -----
+    count_q = (
+        select(func.count())
+        .select_from(StatusChangeRequest)
+        .join(Item, Item.id == StatusChangeRequest.item_id)
+        .where(and_(*where_clauses))
+        if where_clauses
+        else select(func.count()).select_from(StatusChangeRequest)
+        .join(Item, Item.id == StatusChangeRequest.item_id)
+    )
+    total: int = (await db.scalar(count_q)) or 0
+    total_pages = math.ceil(total / page_size) if page_size else 0
+
+    # ----- summary (roll / bundle / total) respecting the same filters -----
+    summary_q = (
+        select(Item.station, func.count(StatusChangeRequest.id))
+        .join(Item, Item.id == StatusChangeRequest.item_id)
+        .where(and_(*where_clauses))
+        .group_by(Item.station)
+        if where_clauses
+        else select(Item.station, func.count(StatusChangeRequest.id))
+        .join(Item, Item.id == StatusChangeRequest.item_id)
+        .group_by(Item.station)
+    )
+    station_counts = (await db.execute(summary_q)).all()
+    by_station = {k: v for k, v in station_counts}
+    roll_cnt = int(by_station.get("ROLL", 0))
+    bundle_cnt = int(by_station.get("BUNDLE", 0))
+
+    return ListResponseOut(
+        data=data,
+        summary=SummaryOut(
+            roll=roll_cnt,
+            bundle=bundle_cnt,
+            total=int(total),
+        ),
+        pagination=PaginationOut(
+            page=page,
+            page_size=page_size,
+            total=int(total),
+            total_pages=total_pages,
+        ),
+    )
+    
+    
 @router.patch("/{request_id}/decision", response_model=StatusChangeRequestOut)
 async def decide_status_change_request(
     request_id: int,
