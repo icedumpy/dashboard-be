@@ -363,18 +363,6 @@ async def decide_fix(
     if decision not in ("APPROVED", "REJECTED"):
         raise HTTPException(status_code=400, detail="Invalid decision")
 
-    # request_event = (
-    #     await db.execute(
-    #         select(ItemEvent)
-    #         .where(
-    #             ItemEvent.item_id == it.id,
-    #             ItemEvent.event_type == "REQUEST_STATUS_CHANGE",
-    #         )
-    #         .order_by(ItemEvent.created_at.desc(), ItemEvent.id.desc())
-    #         .limit(1)
-    #     )
-    # ).scalar_one_or_none()
-
     rv.reviewed_by = user.id
     rv.reviewed_at = datetime.now(TH)
 
@@ -382,22 +370,22 @@ async def decide_fix(
         rv.state = "APPROVED"
         rv.review_note = note
 
-        new_status_id = (
+        qc_pass_status_id = (
             await db.execute(
                 select(ItemStatus.id).where(ItemStatus.code == "QC_PASSED")
             )
         ).scalar_one()
-        it.item_status_id = new_status_id
+        it.item_status_id = qc_pass_status_id
 
         db.add(
-                ItemEvent(
-                    item_id=it.id,
-                    actor_id=user.id,
-                    event_type="FIX_DECISION_APPROVED",
-                    from_status_id=None,
-                    to_status_id=new_status_id,
-                )
+            ItemEvent(
+                item_id=it.id,
+                actor_id=user.id,
+                event_type="FIX_DECISION_APPROVED",
+                from_status_id=it.item_status_id,
+                to_status_id=qc_pass_status_id,
             )
+        )
 
     else:
         rv.state = "REJECTED"
