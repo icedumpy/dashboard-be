@@ -101,7 +101,7 @@ async def create_status_change_request(
                 await db.execute(insert(StatusChangeRequestDefect).values(rows))
 
         # QC can auto-approve and apply immediately
-        if is_qc:
+        if is_qc or going_to_defect:
             defect_ids_applied: list[int] = []
             if going_to_defect:
                 if not body.defect_type_ids:
@@ -434,20 +434,21 @@ async def decide_status_change_request(
             )
         )
 
-        db.add(
-            ItemEvent(
-                item_id=item.id,
-                actor_id=user.id,
-                event_type="STATUS_CHANGED",
-                from_status_id=req.from_status_id,
-                to_status_id=req.to_status_id,
-                details={
-                    "source": "QC_DECISION",
-                    "note": body.note,
-                    "defect_type_ids": defect_ids if going_to_defect else [],
-                },
+        if body.decision == "APPROVED":
+            db.add(
+                ItemEvent(
+                    item_id=item.id,
+                    actor_id=user.id,
+                    event_type="STATUS_CHANGED",
+                    from_status_id=req.from_status_id,
+                    to_status_id=req.to_status_id,
+                    details={
+                        "source": "QC_DECISION",
+                        "note": body.note,
+                        "defect_type_ids": defect_ids if going_to_defect else [],
+                    },
+                )
             )
-        )
 
         await db.commit()
         await db.refresh(req)
