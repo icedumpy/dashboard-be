@@ -366,6 +366,12 @@ async def decide_fix(
     rv.reviewed_by = user.id
     rv.reviewed_at = datetime.now(TH)
 
+    defect_status_id = (
+        await db.execute(
+            select(ItemStatus.id).where(ItemStatus.code == "DEFECT")
+        )
+    ).scalar_one()
+
     if decision == "APPROVED":
         rv.state = "APPROVED"
         rv.review_note = note
@@ -375,11 +381,7 @@ async def decide_fix(
                 select(ItemStatus.id).where(ItemStatus.code == "QC_PASSED")
             )
         ).scalar_one()
-        defect_status_id = (
-            await db.execute(
-                select(ItemStatus.id).where(ItemStatus.code == "DEFECT")
-            )
-        ).scalar_one()
+        
         db.add(
             ItemEvent(
                 item_id=it.id,
@@ -407,7 +409,7 @@ async def decide_fix(
                 item_id=it.id,
                 actor_id=user.id,
                 event_type="FIX_DECISION_REJECTED",
-                from_status_id=it.item_status_id,
+                from_status_id=defect_status_id,
                 to_status_id=rej_status_id,
             )
         )
