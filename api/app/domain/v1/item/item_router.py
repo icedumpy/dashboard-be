@@ -707,7 +707,7 @@ async def get_csv_item_report(
             width_val = width_val if width_val is not None else m.get("r_roll_width")
 
         num_val = m.get("roll_number") if body.station == EStation.ROLL else m.get("bundle_number")
-        status_str = status_label(m.get("status_code"), m.get("defects_csv"))
+        status_str = status_label(m.get("status_code"), m.get("defects_csv"), None)
         dt = m.get("detected_at")
         ts = dt.isoformat(timespec="seconds") if dt else ""
         width_out = "" if width_val is None else str(width_val)
