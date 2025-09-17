@@ -351,29 +351,6 @@ async def get_item_history(
 
     return data
 
-# @router.patch("/{item_id}/status")
-# async def change_item_status(
-#     item_id: int,
-#     body: UpdateItemStatusBody,
-#     db: AsyncSession = Depends(get_db),
-#     user = Depends(get_current_user),
-# ):
-#     require_role(user, ["OPERATOR", "INSPECTOR"])
-
-#     allowed_line_ids = getattr(user, "line_ids", None)
-
-#     result = await operator_change_status(
-#         db,
-#         item_id=item_id,
-#         new_status_business=body.status,
-#         actor_user_id=user.id,
-#         actor_role=user.role,
-#         defect_type_ids=body.defect_type_ids,
-#         meta=body.meta,
-#         guard_line_ids=allowed_line_ids,
-#     )
-#     return result
-
 @router.post("/{item_id}/fix-request")
 async def submit_fix_request(
     request: Request,

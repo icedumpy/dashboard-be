@@ -304,7 +304,6 @@ async def list_status_change_requests(
         ),
     )
     
-    
 @router.patch("/{request_id}/decision", response_model=StatusChangeRequestOut)
 async def decide_status_change_request(
     request_id: int,
@@ -347,16 +346,6 @@ async def decide_status_change_request(
                     reason=new_reason,
                 )
             )
-            # db.add(
-            #     ItemEvent(
-            #         item_id=req.item_id,
-            #         actor_id=user.id,
-            #         event_type="FIX_DECISION_REJECTED",
-            #         from_status_id=req.from_status_id,
-            #         to_status_id=req.to_status_id,
-            #         details={"reason": body.note},
-            #     )
-            # )
             await db.commit()
             await db.refresh(req)
             return StatusChangeRequestOut(
