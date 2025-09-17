@@ -375,8 +375,6 @@ async def decide_fix(
                 select(ItemStatus.id).where(ItemStatus.code == "QC_PASSED")
             )
         ).scalar_one()
-        it.item_status_id = qc_pass_status_id
-
         db.add(
             ItemEvent(
                 item_id=it.id,
@@ -386,6 +384,7 @@ async def decide_fix(
                 to_status_id=qc_pass_status_id,
             )
         )
+        it.item_status_id = qc_pass_status_id
 
     else:
         rv.state = "REJECTED"
