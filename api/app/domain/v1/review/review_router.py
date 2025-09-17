@@ -375,12 +375,17 @@ async def decide_fix(
                 select(ItemStatus.id).where(ItemStatus.code == "QC_PASSED")
             )
         ).scalar_one()
+        defect_status_id = (
+            await db.execute(
+                select(ItemStatus.id).where(ItemStatus.code == "DEFECT")
+            )
+        ).scalar_one()
         db.add(
             ItemEvent(
                 item_id=it.id,
                 actor_id=user.id,
                 event_type="FIX_DECISION_APPROVED",
-                from_status_id=it.item_status_id,
+                from_status_id=defect_status_id,
                 to_status_id=qc_pass_status_id,
             )
         )
