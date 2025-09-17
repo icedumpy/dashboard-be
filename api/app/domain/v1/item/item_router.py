@@ -476,14 +476,15 @@ async def submit_fix_request(
 
     it.current_review_id = rv.id
 
-    db.add(
-        ItemEvent(
-            item_id=it.id,
-            actor_id=user.id,
-            event_type="FIX_REQUEST_SUBMITTED",
-            to_status_id=it.item_status_id,
-        )
-    )
+    # db.add(
+    #     ItemEvent(
+    #         item_id=it.id,
+    #         actor_id=user.id,
+    #         event_type="FIX_REQUEST_SUBMITTED",
+    #         from_status_id=it.item_status_id,
+    #         to_status_id=it.item_status_id,
+    #     )
+    # )
 
     await db.commit()
     return {"review_id": rv.id}
