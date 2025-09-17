@@ -1,4 +1,3 @@
-# app/domain/v1/items_router.py
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from typing import List, Optional, Literal
 import math
@@ -81,7 +80,6 @@ async def create_status_change_request(
         going_to_defect = (target_code == "DEFECT")
         is_normal_like = current_code in ("NORMAL", "QC_PASSED")
 
-        # create request
         req = StatusChangeRequest(
             item_id=body.item_id,
             from_status_id=from_status_id,
@@ -91,16 +89,14 @@ async def create_status_change_request(
             requested_by=user.id,
         )
         db.add(req)
-        await db.flush()  # req.id available
+        await db.flush()
 
-        # attach requested defects (if any)
         if body.defect_type_ids:
             uniq = sorted({int(x) for x in body.defect_type_ids})
             if uniq:
                 rows = [{"request_id": req.id, "defect_type_id": dtid} for dtid in uniq]
                 await db.execute(insert(StatusChangeRequestDefect).values(rows))
 
-        # QC can auto-approve and apply immediately
         if is_qc or going_to_defect:
             defect_ids_applied: list[int] = []
             if going_to_defect:
@@ -113,14 +109,12 @@ async def create_status_change_request(
                     )
                 defect_ids_applied = await _validate_defect_type_ids(db, body.defect_type_ids)
 
-            # update item status
             await db.execute(
                 update(Item)
                 .where(Item.id == item.id)
                 .values(item_status_id=body.to_status_id, updated_at=func.now())
             )
 
-            # replace item defects when moving to DEFECT
             if going_to_defect:
                 await db.execute(delete(ItemDefect).where(ItemDefect.item_id == item.id))
                 if defect_ids_applied:
@@ -130,33 +124,31 @@ async def create_status_change_request(
                     ]
                     await db.execute(insert(ItemDefect).values(rows))
 
-            # mark request approved
             await db.execute(
                 update(StatusChangeRequest)
                 .where(StatusChangeRequest.id == req.id)
                 .values(state="APPROVED", approved_by=user.id, approved_at=func.now())
             )
 
-            # log event
-            db.add(
-                ItemEvent(
-                    item_id=item.id,
-                    actor_id=user.id,
-                    event_type="STATUS_CHANGED",
-                    from_status_id=from_status_id,
-                    to_status_id=body.to_status_id,
-                    details={
-                        "source": "QC_AUTO_APPROVE",
-                        "reason": body.reason,
-                        "meta": body.meta,
-                        "defect_type_ids": defect_ids_applied if going_to_defect else [],
-                    },
+            if is_qc:
+                db.add(
+                    ItemEvent(
+                        item_id=item.id,
+                        actor_id=user.id,
+                        event_type="STATUS_CHANGED" if is_qc else "CHNAGE_STATUS_REQUESTED",
+                        from_status_id=from_status_id,
+                        to_status_id=body.to_status_id,
+                        details={
+                            "source": "QC_AUTO_APPROVE",
+                            "reason": body.reason,
+                            "meta": body.meta,
+                            "defect_type_ids": defect_ids_applied if going_to_defect else [],
+                        },
+                    )
                 )
-            )
 
         await db.commit()
 
-        # IMPORTANT: Explicitly fetch defect_type_ids for the response (avoid req.defects lazy-load)
         defect_rows = await db.execute(
             select(StatusChangeRequestDefect.defect_type_id)
             .where(StatusChangeRequestDefect.request_id == req.id)
@@ -164,7 +156,6 @@ async def create_status_change_request(
         )
         defect_type_ids = [r[0] for r in defect_rows.all()]
 
-        # If you need any request fields possibly changed by triggers, re-read the row explicitly
         req_row = (
             await db.execute(
                 select(
