@@ -418,7 +418,7 @@ async def decide_status_change_request(
             db.add(
                 ItemEvent(
                     item_id=item.id,
-                    actor_id=user.id,
+                    actor_id=req.requested_by,
                     event_type="STATUS_CHANGED",
                     from_status_id=req.from_status_id,
                     to_status_id=req.to_status_id,
