@@ -316,6 +316,8 @@ async def edit_item(
         item.bundle_number = _trim(data["bundle_number"])
     if "job_order_number" in data:
         item.job_order_number = _trim(data["job_order_number"])
+    if "roll_id" in data:
+        item.roll_id = _trim(data["roll_id"])
 
     if "roll_width" in data:
         if data["roll_width"] is None:

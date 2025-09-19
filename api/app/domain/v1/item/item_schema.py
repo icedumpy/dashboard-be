@@ -8,6 +8,7 @@ OperatorStatus = Literal["DEFECT", "SCRAP", "NORMAL"]
 
 class ItemEditIn(BaseModel):
     product_code: Optional[str] = Field(None, max_length=255)
+    roll_id: Optional[str] = Field(None, max_length=255)
     roll_number: Optional[str] = Field(None, max_length=255)
     bundle_number: Optional[str] = Field(None, max_length=255)
     job_order_number: Optional[str] = Field(None, max_length=255)
