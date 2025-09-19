@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Query, Depends, HTTPException
 from typing import Optional, Annotated
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, insert
+from sqlalchemy import select, func, insert, text
 from datetime import datetime
 
 
@@ -24,6 +24,9 @@ TH = ZoneInfo("Asia/Bangkok")
 router = APIRouter()
 
 
+from datetime import datetime, timedelta
+from typing import Optional, Annotated
+
 @router.get("")
 async def list_reviews(
     page: int = Query(1, ge=1),
@@ -31,6 +34,12 @@ async def list_reviews(
     line_id: Optional[int] = Query(None),
     review_state: Annotated[list[EReviewState] | None, Query()] = None,
     defect_type_id: Optional[int] = Query(None),
+
+    reviewed_at_from: Optional[datetime] = Query(None, description="reviewed_at >= this ISO8601 datetime"),
+    reviewed_at_to: Optional[datetime] = Query(None, description="reviewed_at <= this ISO8601 datetime"),
+    submitted_at_from: Optional[datetime] = Query(None, description="submitted_at >= this ISO8601 datetime"),
+    submitted_at_to: Optional[datetime] = Query(None, description="submitted_at <= this ISO8601 datetime"),
+
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -64,9 +73,17 @@ async def list_reviews(
             ItemDefect.defect_type_id == defect_type_id
         )
     if review_state:
-        base_cols = base_cols.where(Review.state.in_([s.value for s in review_state]))
+        base_cols = base_cols.where(Review.state.in_(review_state))
+    if reviewed_at_from:
+        base_cols = base_cols.where(Review.reviewed_at >= reviewed_at_from)
+    if reviewed_at_to:
+        base_cols = base_cols.where(Review.reviewed_at <= reviewed_at_to)
+    if submitted_at_from:
+        base_cols = base_cols.where(Review.created_at >= submitted_at_from)
+    if submitted_at_to:
+        base_cols = base_cols.where(Review.created_at <= submitted_at_to)
 
-    s = base_cols.subquery("s") 
+    s = base_cols.subquery("s")
 
     total = await db.scalar(
         select(func.count()).select_from(select(s.c.rid).where(s.c.rn == 1).subquery())
@@ -93,18 +110,29 @@ async def list_reviews(
         )
         .join(Item, Item.id == Review.item_id)
     )
+
     if line_id:
         sum_cols = sum_cols.where(Item.line_id == line_id)
     if defect_type_id:
         sum_cols = sum_cols.join(ItemDefect, ItemDefect.item_id == Item.id).where(
             ItemDefect.defect_type_id == defect_type_id
         )
+    if review_state:
+        sum_cols = sum_cols.where(Review.state.in_(review_state))
+    if reviewed_at_from:
+        sum_cols = sum_cols.where(Review.reviewed_at >= reviewed_at_from)
+    if reviewed_at_to:
+        sum_cols = sum_cols.where(Review.reviewed_at <= reviewed_at_to)
+    if submitted_at_from:
+        sum_cols = sum_cols.where(Review.created_at >= submitted_at_from)
+    if submitted_at_to:
+        sum_cols = sum_cols.where(Review.created_at <= submitted_at_to)
 
     sb = sum_cols.subquery("sb")
 
     sum_rows = (await db.execute(
         select(sb.c.state, func.count().label("cnt"))
-        .where(sb.c.rn == 1)              # latest review per item
+        .where(sb.c.rn == 1)             
         .group_by(sb.c.state)
     )).all()
     sum_map = {row.state: int(row.cnt) for row in sum_rows}
@@ -219,7 +247,6 @@ async def list_reviews(
             "total_pages": ((total or 0) + page_size - 1) // page_size,
         },
     }
-    
 @router.get("/{review_id}")
 async def get_review_by_id(
     review_id: int,
