@@ -162,7 +162,7 @@ async def list_reviews(
     item_ids = {rv.item_id for rv in reviews}
     items_rows = await db.execute(
         select(
-            Item.id, Item.station, Item.line_id, Item.product_code, Item.roll_number,
+            Item.id, Item.station, Item.line_id, Item.product_code, Item.roll_number, Item.roll_id,
             Item.bundle_number, Item.job_order_number, Item.roll_width, Item.detected_at,
             Item.item_status_id, Item.ai_note
         ).where(Item.id.in_(item_ids))
@@ -223,6 +223,7 @@ async def list_reviews(
                 "line_id": it.line_id,
                 "product_code": it.product_code,
                 "number": number,
+                "roll_id": it.roll_id,
                 "job_order_number": it.job_order_number,
                 "roll_width": it.roll_width,
                 "detected_at": it.detected_at,

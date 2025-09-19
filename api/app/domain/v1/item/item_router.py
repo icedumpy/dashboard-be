@@ -256,6 +256,7 @@ async def get_item_detail(
             "station": it.station,
             "line_id": it.line_id,
             "product_code": it.product_code,
+            "roll_id": it.roll_id,
             "roll_number": it.roll_number,
             "bundle_number": it.bundle_number,
             "job_order_number": it.job_order_number,
