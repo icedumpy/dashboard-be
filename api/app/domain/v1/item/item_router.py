@@ -1,10 +1,11 @@
 # app/domain/v1/items_router.py
 from fastapi import APIRouter, Query, Depends, HTTPException, Request, status
 from typing import Optional, Annotated, List
-
+from decimal import Decimal, ROUND_HALF_UP
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, or_, and_, literal, text, update, insert
+from sqlalchemy import select, func, or_, and_, literal, text
 from sqlalchemy.orm import aliased
+from sqlalchemy.exc import IntegrityError
 
 from datetime import datetime, timedelta
 from app.core.config.config import settings
@@ -19,7 +20,7 @@ from app.core.db.repo.models import (
     EStation,EItemStatusCode,User
 )
 
-from app.domain.v1.item.item_schema import FixRequestBody, UpdateItemStatusBody, ItemReportRequest, ItemEventOut, ActorOut
+from app.domain.v1.item.item_schema import FixRequestBody, ItemEditIn, ItemEditOut, ItemReportRequest, ItemEventOut, ActorOut
 from app.domain.v1.item.item_service import summarize_station, status_label, norm
 from app.utils.helper.helper import (
     require_role,
@@ -280,6 +281,62 @@ async def get_item_detail(
             } for rv in rws
         ]
     }
+
+@router.patch("/{item_id}", response_model=ItemEditOut)
+async def edit_item(
+    item_id: int,
+    payload: ItemEditIn,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    require_role(user, ["OPERATOR", "INSPECTOR"])
+
+    stmt = (
+        select(Item)
+        .where(Item.id == item_id)
+        .with_for_update()
+    )
+    item = (await db.execute(stmt)).scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    data = payload.model_dump(exclude_unset=True)
+
+    if not data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    def _trim(val: Optional[str]) -> Optional[str]:
+        return val.strip() if isinstance(val, str) else val
+
+    if "product_code" in data:
+        item.product_code = _trim(data["product_code"])
+    if "roll_number" in data:
+        item.roll_number = _trim(data["roll_number"])
+    if "bundle_number" in data:
+        item.bundle_number = _trim(data["bundle_number"])
+    if "job_order_number" in data:
+        item.job_order_number = _trim(data["job_order_number"])
+
+    if "roll_width" in data:
+        if data["roll_width"] is None:
+            item.roll_width = None
+        else:
+            q = Decimal(str(data["roll_width"])).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            if abs(q) >= Decimal("100000000"):
+                raise HTTPException(status_code=422, detail="roll_width out of range for Numeric(10,2)")
+            item.roll_width = q
+
+    try:
+        await db.flush()
+        await db.commit()
+    except IntegrityError as e:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Integrity error while updating item")
+
+    await db.refresh(item)
+
+    return ItemEditOut.model_validate(item)
+
 
 @router.get("/{item_id}/history", response_model=List[ItemEventOut])
 async def get_item_history(
