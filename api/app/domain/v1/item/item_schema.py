@@ -1,9 +1,33 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, condecimal
 from typing import List, Optional, Literal, Any, Dict
 from datetime import datetime
 from app.core.db.repo.models import EStation, EItemStatusCode
+from decimal import Decimal, ROUND_HALF_UP
 
 OperatorStatus = Literal["DEFECT", "SCRAP", "NORMAL"]
+
+class ItemEditIn(BaseModel):
+    product_code: Optional[str] = Field(None, max_length=255)
+    roll_id: Optional[str] = Field(None, max_length=255)
+    roll_number: Optional[str] = Field(None, max_length=255)
+    bundle_number: Optional[str] = Field(None, max_length=255)
+    job_order_number: Optional[str] = Field(None, max_length=255)
+    roll_width: Optional[condecimal(max_digits=10, decimal_places=2)] = None
+
+    model_config = {
+        "extra": "forbid"
+    }
+
+# (optional) minimal response type
+class ItemEditOut(BaseModel):
+    id: int
+    product_code: Optional[str] = None
+    roll_number: Optional[str] = None
+    bundle_number: Optional[str] = None
+    job_order_number: Optional[str] = None
+    roll_width: Optional[Decimal] = None
+
+    model_config = {"from_attributes": True}
 
 class ActorOut(BaseModel):
     id: int
