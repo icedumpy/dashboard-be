@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field, condecimal
 from typing import List, Optional, Literal, Any, Dict
 from datetime import datetime
 from app.core.db.repo.models import EStation, EItemStatusCode
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 
 OperatorStatus = Literal["DEFECT", "SCRAP", "NORMAL"]
 
