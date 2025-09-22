@@ -1,7 +1,7 @@
 # app/core/db/repo/qc/models.py
 from __future__ import annotations
 from enum import Enum
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Literal
 from sqlalchemy import (
     String, Boolean, ForeignKey, UniqueConstraint, Numeric, Text,
     func, Integer, Index
@@ -17,6 +17,7 @@ StationEnum      = PGEnum("ROLL", "BUNDLE", name="station",  create_type=False)
 ReviewTypeEnum   = PGEnum("DEFECT_FIX", "SCRAP_FROM_RECHECK", "REQUEST_STATUS_CHANGE", name="review_type",  create_type=False)
 ReviewStateEnum  = PGEnum("PENDING", "APPROVED", "REJECTED", name="review_state",  create_type=False)
 ImageKindEnum    = PGEnum("DETECTED", "FIX", "OTHER", name="image_kind",  create_type=False)
+Role = Literal["INSPECTOR", "OPERATOR", "VIEWER"]
 
 class EStation(str, Enum):
     ROLL = "ROLL"

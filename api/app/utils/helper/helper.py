@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
-from app.core.db.repo.models import User, Item, ItemImage, ProductionLine
+from app.core.db.repo.models import User, Item, ItemImage, ProductionLine, Role
 
 
 
@@ -32,7 +32,7 @@ def current_shift_window(now: datetime | None = None) -> tuple[datetime, datetim
     else:
         return day_end - timedelta(days=1), day_start
     
-def require_role(user: User, allowed: List[str]):
+def require_role(user: User, allowed: List[Role]) -> None:
     if user.role not in allowed:
         raise HTTPException(status_code=403, detail="Forbidden")
 
