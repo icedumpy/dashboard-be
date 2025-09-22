@@ -10,7 +10,7 @@ from sqlalchemy.sql import func
 from app.core.db.session import get_db
 from app.core.security.auth import get_current_user
 from app.core.db.repo.models import StatusChangeRequest, StatusChangeRequestDefect, ItemEvent, Item, ItemDefect, DefectType, ItemStatus
-from app.domain.v1.change_status.change_status_schema import StatusChangeRequestOut, DecisionRequestBody, StatusChangeRequestCreate, ListResponseOut, SummaryOut, PaginationOut, ListResponseOut
+from app.domain.v1.change_status.schema import StatusChangeRequestOut, DecisionRequestBody, StatusChangeRequestCreate, ListResponseOut, SummaryOut, PaginationOut, ListResponseOut
 from app.utils.helper.helper import (
     require_role,
 )

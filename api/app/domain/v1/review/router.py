@@ -11,7 +11,7 @@ from app.core.db.repo.models import User
 from app.core.db.repo.models import (
     ItemStatus, Review, ItemEvent, Item, ItemDefect, DefectType,EReviewState
 )
-from app.domain.v1.review.review_schema import DecisionRequestBody
+from app.domain.v1.review.schema import DecisionRequestBody
 from app.utils.helper.helper import (
     require_role,
 )

@@ -5,7 +5,6 @@ from typing import List, Optional, Literal, Any, Dict
 
 class StatusChangeRequestCreate(BaseModel):
     item_id: int
-    # from_status_id: int
     to_status_id: int
     reason: Optional[str] = None
     meta: Optional[Dict] = None
@@ -25,12 +24,9 @@ class StatusChangeRequestOut(BaseModel):
     meta: Optional[Dict] = None
     defect_type_ids: List[int] = []
 
-    # class Config:
-    #     orm_mode = True
-
 
 class DecisionRequestBody(BaseModel):
-    decision: str = Field(..., example="APPROVED")  # APPROVE or REJECT
+    decision: str = Field(..., example="APPROVED")
     note: Optional[str] = Field(None, example="QC failed at visual inspection")
 
     class Config:

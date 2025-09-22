@@ -23,7 +23,7 @@ router = APIRouter()
 async def upload_images(
     files: List[UploadFile] = File(...),
     item_id: Optional[int] = Form(None),
-    kind: Optional[str] = Form("FIX"),  # DETECTED|FIX|OTHER
+    kind: Optional[str] = Form("FIX"),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -36,15 +36,13 @@ async def upload_images(
     base = Path("./images") / current_base_path
     base.mkdir(parents=True, exist_ok=True)
     
-    # Insert rows first to get ids (for row_number in filename)
     imgs = []
     for _ in files:
         im = ItemImage(item_id=item_id, review_id=None, kind=kind, path="", uploaded_by=user.id)
         db.add(im)
         imgs.append(im)
-    await db.flush()  # get ids
+    await db.flush() 
 
-    # Save files with row_number (id)
     for f, im in zip(files, imgs):
         ext = (Path(f.filename).suffix or ".jpg").lower()
         dest = Path(base) / f"{im.id}{ext}"  
@@ -69,7 +67,6 @@ async def get_image(
     """
     require_role(user, ["VIEWER", "OPERATOR", "INSPECTOR"])
 
-    # Authorize via DB ownership
     row = await db.execute(
         select(ItemImage, Item.line_id)
         .join(Item, Item.id == ItemImage.item_id)
@@ -81,11 +78,9 @@ async def get_image(
 
     img: ItemImage = found[0]
 
-    # Optional soft-delete guard
     if getattr(img, "deleted_at", None):
         raise HTTPException(status_code=404, detail="Image not found")
 
-    # Resolve and serve file
     fs_path = safe_fs_path(image_path)
     if not fs_path.is_file():
         raise HTTPException(status_code=404, detail="File not found on disk")
