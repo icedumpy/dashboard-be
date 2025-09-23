@@ -78,22 +78,27 @@ class ReviewService:
         rn = self._window_rn(order_cols=(Review.updated_at.desc(), Review.id.desc()))
         base = (
             select(
-                Review.id.label("rid"),
-                Review.item_id.label("iid"),
-                Review.state.label("r_state"),
-                Review.updated_at.label("r_updated_at"),
-                Review.reviewed_at.label("r_reviewed_at"),
-                Review.created_at.label("r_submitted_at"),
-                Item.detected_at.label("i_detected_at"),
-                Item.line_id.label("i_line_id"),
-                Item.product_code.label("i_product_code"),
-                Item.roll_number.label("i_roll_number"),
-                Item.bundle_number.label("i_bundle_number"),
-                Item.id.label("item_pk"),
-                rn,
-            )
-            .join(Item, Item.id == Review.item_id)
-            .join(ItemStatus, Item.item_status_id == ItemStatus.id)
+              Review.id.label("rid"),
+              Review.item_id.label("iid"),
+              Review.state.label("r_state"),
+              Review.reviewed_by.label("r_reviewed_by"),
+              Review.reviewed_at.label("r_reviewed_at"),
+              Review.updated_at.label("r_updated_at"),
+              Review.created_at.label("r_submitted_at"),
+              func.coalesce(Review.review_note, Review.reject_reason).label("r_decision"),
+
+              Item.detected_at.label("i_detected_at"),
+              Item.line_id.label("i_line_id"),
+              Item.station.label("i_station"),
+              Item.product_code.label("i_product_code"),
+              Item.job_order_number.label("i_job_order_number"),
+              func.coalesce(Item.roll_number, Item.bundle_number).label("i_number"),
+
+              Item.id.label("item_pk"),
+              rn,
+          )
+          .join(Item, Item.id == Review.item_id)
+          .join(ItemStatus, Item.item_status_id == ItemStatus.id)
         )
         base = self._apply_common_filters(
             base,
@@ -112,11 +117,17 @@ class ReviewService:
         ) or 0
 
         ALLOWED_SORT = {
-            ReviewSortField.id:   s.c.rid,
-            ReviewSortField.state:  s.c.r_state,
-            ReviewSortField.submitted_at:    s.c.r_submitted_at,
-            ReviewSortField.reviewed_at:         s.c.r_reviewed_at,
+          ReviewSortField.production_line: s.c.i_line_id,
+          ReviewSortField.station:         s.c.i_station,
+          ReviewSortField.product_code:    s.c.i_product_code,
+          ReviewSortField.number:          s.c.i_number,
+          ReviewSortField.job_order:       s.c.i_job_order_number,
+          ReviewSortField.state:           s.c.r_state,
+          ReviewSortField.decision:        s.c.r_decision,
+          ReviewSortField.reviewed_by:     s.c.r_reviewed_by,
+          ReviewSortField.reviewed_at:     s.c.r_reviewed_at,
         }
+
 
         ids_q = select(s.c.rid).where(s.c.rn == 1)
         sort_col = ALLOWED_SORT.get(sort_by)
