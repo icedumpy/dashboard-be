@@ -43,6 +43,10 @@ class EItemStatusCode(str, Enum):
     NORMAL = "NORMAL"
     QC_PASSED = "QC_PASSED"
 
+class EOrderBy(str, Enum):
+    ASC = "asc"
+    DESC = "desc"
+
 # =========================
 # Master tables
 # =========================
@@ -171,6 +175,19 @@ class Item(Base):
         foreign_keys="BundleRoll.roll_item_id",
         cascade="all, delete-orphan",
     )
+
+class ItemSortField(str, Enum):
+    id = "id"
+    station = "station"
+    line_id = "line_id"
+    product_code = "product_code"
+    roll_number = "roll_number"
+    bundle_number = "bundle_number"
+    job_order_number = "job_order_number"
+    roll_width = "roll_width"
+    roll_id = "roll_id"
+    detected_at = "detected_at"
+    status_code = "status_code"
 
 # Helpful ORM-side indexes (optional; DB has them already in migration)
 Index("ix_qc_items_status_time", Item.item_status_id, Item.detected_at.desc())
