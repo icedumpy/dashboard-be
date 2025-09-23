@@ -37,7 +37,7 @@ router = APIRouter()
 
 log = logging.getLogger(__name__)
 
-def get_item_service(db: AsyncSession = Depends(get_db)) -> ItemService:
+def get_service(db: AsyncSession = Depends(get_db)) -> ItemService:
     return ItemService(db)
 
 # ---------- GET /items ----------
@@ -63,7 +63,7 @@ async def list_items(
     detected_to: Optional[datetime] = Query(None, description="ISO8601"),
 
     user: User = Depends(get_current_user),
-    svc: ItemService = Depends(get_item_service),
+    svc: ItemService = Depends(get_service),
 ):
     require_role(user, ["VIEWER", "OPERATOR", "INSPECTOR"])
     return await svc.list_items(
@@ -89,7 +89,7 @@ async def list_items(
 async def get_item_detail(
     item_id: int,
     user: User = Depends(get_current_user),
-    svc: ItemService = Depends(get_item_service),
+    svc: ItemService = Depends(get_service),
 ):
     require_role(user, ["VIEWER", "OPERATOR", "INSPECTOR"])
     return await svc.get_item_detail(item_id)
@@ -99,7 +99,7 @@ async def edit_item(
     item_id: int,
     payload: ItemEditIn,
     user: User = Depends(get_current_user),
-    svc: ItemService = Depends(get_item_service),
+    svc: ItemService = Depends(get_service),
 ):
     require_role(user, ["OPERATOR", "INSPECTOR"])
     item = await svc.edit_item(item_id, payload)

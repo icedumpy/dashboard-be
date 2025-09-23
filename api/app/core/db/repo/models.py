@@ -266,6 +266,12 @@ class Review(Base):
 
     item: Mapped["Item"] = relationship(back_populates="reviews")
 
+class ReviewSortField(str, Enum):
+    id = "id"
+    state = "state"
+    submitted_at = 'submitted_at'
+    reviewed_at = 'reviewed_at'
+
 # =========================
 # Item images
 # =========================
