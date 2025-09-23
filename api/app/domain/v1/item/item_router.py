@@ -14,7 +14,7 @@ from io import StringIO
 from app.core.db.session import get_db
 from app.core.security.auth import get_current_user
 from app.core.db.repo.models import (
-    Item, ItemStatus, ProductionLine, ItemDefect, DefectType,
+    EOrderBy, Item, ItemSortField, ItemStatus, ProductionLine, ItemDefect, DefectType,
     Review, ItemImage, ItemEvent,
     StatusChangeRequest,
     EStation,EItemStatusCode,User
@@ -42,6 +42,8 @@ log = logging.getLogger(__name__)
 async def list_items(
     page: int = Query(1, ge=1, description="1-based page index"),
     page_size: int = Query(10, ge=1, le=100, description="items per page (max 100)"),
+    sort_by: Annotated[Optional[ItemSortField], Query(description="field to sort by")] = None,
+    order_by: Annotated[Optional[EOrderBy], Query(description="order direction (asc or desc)")] = None,
 
     station: Annotated[Optional[EStation], Query(description="filter by station")] = None,
     line_id: Optional[int] = Query(None, description="e.g. 1 = Line 3, 2 = Line 4"),
@@ -103,7 +105,23 @@ async def list_items(
             q = q.where(text("qc.items.detected_at >= :dt")).params(dt=dt)
     
 
-    q = q.order_by(ItemStatus.display_order.asc(), Item.detected_at.desc(), Item.id.desc())
+    allowed_sort_fields = {
+        ItemSortField[col.name]: getattr(Item, col.name)
+        for col in Item.__table__.columns
+        if col.name in ItemSortField.__members__
+    }
+
+    if sort_by:
+        if sort_by == ItemSortField.status_code:
+            col = ItemStatus.display_order
+        else:
+            col = allowed_sort_fields[sort_by]
+        if order_by and order_by.lower() == EOrderBy.ASC:
+            q = q.order_by(col.asc())
+        else:
+            q = q.order_by(col.desc())
+    else:
+        q = q.order_by(ItemStatus.display_order.asc(), Item.detected_at.desc(), Item.id.desc())
 
     total = (await db.execute(q.with_only_columns(text("count(*)")).order_by(None))).scalar()
 
