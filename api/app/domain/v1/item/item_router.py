@@ -112,7 +112,10 @@ async def list_items(
     }
 
     if sort_by:
-        col = allowed_sort_fields[sort_by]
+        if sort_by == ItemSortField.status_code:
+            col = ItemStatus.display_order
+        else:
+            col = allowed_sort_fields[sort_by]
         if order_by and order_by.lower() == EOrderBy.ASC:
             q = q.order_by(col.asc())
         else:
