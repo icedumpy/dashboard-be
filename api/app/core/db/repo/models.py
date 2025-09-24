@@ -351,7 +351,16 @@ class StatusChangeRequest(Base):
         back_populates="request", cascade="all, delete-orphan"
     )
 
-
+class StatusChangeSortField(str, Enum):
+    production_line = "production_line"
+    station = "station"
+    product_code = "product_code"
+    number = "number"
+    job_order_number = "job_order_number"
+    status_before = "status_before"
+    status_after = "status_after"
+    requested_at = "requested_at"
+    
 class StatusChangeRequestDefect(Base):
     __tablename__ = "status_change_request_defects"
     __table_args__ = {"schema": "qc"}
