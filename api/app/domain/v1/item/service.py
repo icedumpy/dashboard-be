@@ -549,10 +549,12 @@ async def summarize_station(
     q = (
         select(
             func.count().label("total"),
-            func.sum(case((ItemStatus.code.in_(("DEFECT", "REJECTED")), 1), else_=0)).label("defects"),
+            func.sum(case((ItemStatus.code == "NORMAL", 1), else_=0)).label("normal"),
+            func.sum(case((ItemStatus.code == "QC_PASSED", 1), else_=0)).label("qc_passed"),
+            func.sum(case((ItemStatus.code == "REJECTED", 1), else_=0)).label("rejected"),
             func.sum(case((ItemStatus.code == "SCRAP", 1), else_=0)).label("scrap"),
+            func.sum(case((ItemStatus.code == "DEFECT", 1), else_=0)).label("defect"),
             func.sum(case((and_(ItemStatus.code.in_(("DEFECT", "REJECTED")), pending_exists), 1), else_=0)).label("pending_defect"),
-            func.sum(case((and_(ItemStatus.code == "RECHECK", pending_exists), 1), else_=0)).label("pending_scrap"),
         )
         .select_from(Item)
         .join(ItemStatus, ItemStatus.id == Item.item_status_id)
@@ -560,11 +562,13 @@ async def summarize_station(
     )
 
     row = (await db.execute(q)).first() or (0, 0, 0, 0, 0)
-    total, defects, scrap, pending_defect, pending_scrap = row
+    total, normal, qc_passed, rejected, scrap, defect, pending_defect = row
     return {
         "total": total or 0,
-        "defects": defects or 0,
+        "normal": normal or 0,
+        "qc_passed": qc_passed or 0,
+        "rejected": rejected or 0,
         "scrap": scrap or 0,
+        "defect": defect or 0,
         "pending_defect": pending_defect or 0,
-        "pending_scrap": pending_scrap or 0,
     }
