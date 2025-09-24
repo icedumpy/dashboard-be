@@ -14,7 +14,6 @@ class ReviewService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    # ---------- tiny helpers ----------
     @staticmethod
     def _page_window(page: int, page_size: int) -> Tuple[int, int]:
         page_size = max(1, min(page_size, 100))
@@ -56,7 +55,6 @@ class ReviewService:
             q = q.where(Review.created_at <= submitted_at_to)
         return q
 
-    # ---------- public API ----------
     async def list_reviews(
         self,
         *,
@@ -84,7 +82,7 @@ class ReviewService:
               Review.reviewed_by.label("r_reviewed_by"),
               Review.reviewed_at.label("r_reviewed_at"),
               Review.updated_at.label("r_updated_at"),
-              Review.created_at.label("r_submitted_at"),
+              Review.created_at.label("r_submitted_at"), # submitted_at has to be removed
               func.coalesce(Review.review_note, Review.reject_reason).label("r_decision"),
 
               Item.detected_at.label("i_detected_at"),
@@ -126,6 +124,7 @@ class ReviewService:
           ReviewSortField.decision:        s.c.r_decision,
           ReviewSortField.reviewed_by:     s.c.r_reviewed_by,
           ReviewSortField.reviewed_at:     s.c.r_reviewed_at,
+          ReviewSortField.submitted_at:     s.c.r_submitted_at,
         }
 
 

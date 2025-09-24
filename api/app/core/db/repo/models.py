@@ -276,6 +276,7 @@ class ReviewSortField(str, Enum):
     decision = "decision"
     reviewed_by = "reviewed_by"
     reviewed_at = "reviewed_at"
+    submitted_at = "submitted_at"
 
 
 # =========================
