@@ -25,7 +25,7 @@ help:
 	@echo "  make build           Build local image $(IMAGE):$(TAG)"
 	@echo "  make save            Save image to $(TAR_FILE)"
 	@echo "  make ship            Copy tar to nodes & docker load"
-	@echo "  make status          Check status of stack""
+	@echo "  make status          Check status of stack"
 	@echo "  make deploy          docker stack deploy -c $(STACK_FILE) $(STACK)"
 	@echo "  make redeploy        Build -> save -> ship -> deploy"
 	@echo ""
