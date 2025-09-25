@@ -2,7 +2,7 @@
 # Image & stack
 IMAGE ?= fitesa-backend
 TAG   ?= 1.0.0
-STACK ?= qc
+STACK ?= qc_api
 SERVICE ?= api                 # service name in docker-stack.yml (becomes $(STACK)_$(SERVICE))
 
 # Files
@@ -10,7 +10,7 @@ STACK_FILE ?= docker-stack.yml
 TAR_FILE   ?= /tmp/$(IMAGE)-$(TAG).tar
 
 # Swarm nodes & ssh user (edit these)
-NODES ?= node1 node2
+NODES ?= docker-desktop localhost
 SSH_USER ?= $(USER)
 
 # Optional: published port for templating or env passing
