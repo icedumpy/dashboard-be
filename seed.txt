@@ -160,3 +160,7 @@ INSERT INTO qc.item_images (item_id, review_id, kind, path) VALUES
   (7, NULL, 'DETECTED', '2025-08/21/line_4/bundle/250723017E17/capture/331583_top_3.jpg'),
   (8, NULL, 'DETECTED', '2025-08/21/line_4/roll/250723017E18/capture/331584.jpg'),
   (9, NULL, 'DETECTED', '2025-08/21/line_4/roll/250723017E18/capture/331584.jpg');
+
+
+
+  docker swarm join --token SWMTKN-1-5nvqllvm2qxksl32j7a6lunqsrv4v9w9852h2oc4nq86eu62d4-a2hylgx8cvt1ubj5vux492tud 192.168.65.3:2377
