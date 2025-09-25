@@ -12,7 +12,7 @@ from sqlalchemy.orm import aliased
 from sqlalchemy import select, update, delete, insert, or_, func, case, and_, asc, desc, exists, literal, literal_column, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.v1.item.schema import FixRequestBody, ItemEditIn
+from app.domain.v1.item.schema import FixRequestBody, ItemEditIn, ItemAckOut
 from app.utils.helper.helper import current_shift_window, TZ
 from app.utils.helper.paginate import paginate
 from app.core.db.repo.models import EStation, EItemStatusCode, DefectType, User, ItemSortField, EOrderBy
@@ -194,9 +194,8 @@ class ItemService:
                 "detected_at": it.detected_at.isoformat(),
                 "status_code": st,
                 "ai_note": it.ai_note,
-                "scrap_requires_qc": it.scrap_requires_qc,
-                "scrap_confirmed_by": it.scrap_confirmed_by,
-                "scrap_confirmed_at": it.scrap_confirmed_at.isoformat() if it.scrap_confirmed_at else None,
+                "acknowledged_by": it.acknowledged_by,
+                "acknowledged_at": it.acknowledged_at.isoformat() if it.acknowledged_at else None,
                 "current_review_id": it.current_review_id,
             },
             "defects": [{"defect_type_code": c, "meta": m} for c, m in defs],
@@ -266,6 +265,34 @@ class ItemService:
         await self.db.refresh(item)
         return item
 
+    async def ack_item(self, item_id: int, user_id: int):
+        stmt = select(Item).where(Item.id == item_id).with_for_update()
+        item = (await self.db.execute(stmt)).scalar_one_or_none()
+
+        if not item:
+            raise HTTPException(status_code=404, detail="Item not found")
+
+        if item.acknowledged_at is not None and item.acknowledged_by is not None:
+            return ItemAckOut(
+                id=item.id,
+                acknowledged_at=item.acknowledged_at,
+                acknowledged_by=item.acknowledged_by,
+                changed=False,
+            )
+
+        item.acknowledged_at = datetime.now(TZ)
+        item.acknowledged_by = user_id
+
+        await self.db.commit()
+        await self.db.refresh(item)
+
+        return ItemAckOut(
+            id=item.id,
+            acknowledged_at=item.acknowledged_at,
+            acknowledged_by=item.acknowledged_by,
+            changed=True,
+        )
+
     def _apply_role_default_window(self, q, user_role: str):
         now = datetime.now(TZ)
         if user_role == "VIEWER":
@@ -302,9 +329,8 @@ class ItemService:
                 Item.roll_width,
                 Item.roll_id,
                 Item.detected_at,
-                Item.scrap_requires_qc,
-                Item.scrap_confirmed_by,
-                Item.scrap_confirmed_at,
+                Item.acknowledged_by,
+                Item.acknowledged_at,
                 Item.current_review_id,
 
                 ItemStatus.code.label("status_code"),
@@ -368,10 +394,6 @@ class ItemService:
         return q
 
     def _add_bundle_roll_fallback(self, q):
-        """
-        Join a correlated LATERAL subquery that finds the latest ROLL row.
-        Then ADD computed columns (eff_*), rather than replacing the original columns.
-        """
         ri = aliased(Item, name="ri")
 
         roll_lat = (
@@ -425,9 +447,8 @@ class ItemService:
             "roll_id": r.roll_id,
             "detected_at": r.detected_at.isoformat(),
             "status_code": r.status_code,
-            "scrap_requires_qc": r.scrap_requires_qc,
-            "scrap_confirmed_by": r.scrap_confirmed_by,
-            "scrap_confirmed_at": r.scrap_confirmed_at.isoformat() if r.scrap_confirmed_at else None,
+            "acknowledged_by": r.acknowledged_by,
+            "acknowledged_at": r.acknowledged_at.isoformat() if r.acknowledged_at else None,
             "current_review_id": r.current_review_id,
             "is_pending_review": bool(r.is_pending_review),
             "is_changing_status_pending": bool(r.is_changing_status_pending),
@@ -448,7 +469,6 @@ def build_item_filters(
     detected_from: Optional[datetime] = None,
     detected_to: Optional[datetime] = None,
 ) -> list[BinaryExpression]:
-    """Return SQLAlchemy WHERE clauses matching list_items semantics."""
     clauses: list[BinaryExpression] = [Item.deleted_at.is_(None)]
 
     if line_id is not None:

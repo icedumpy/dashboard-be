@@ -18,7 +18,13 @@ class ItemEditIn(BaseModel):
         "extra": "forbid"
     }
 
-# (optional) minimal response type
+
+class ItemAckOut(BaseModel):
+    id: int
+    acknowledged_at: datetime | None
+    acknowledged_by: int | None
+    changed: bool
+
 class ItemEditOut(BaseModel):
     id: int
     product_code: Optional[str] = None

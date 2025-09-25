@@ -19,13 +19,12 @@ from app.core.db.repo.models import (
     EStation,EItemStatusCode,User
 )
 
-from app.domain.v1.item.schema import FixRequestBody, ItemEditIn, ItemEditOut, ItemReportRequest, ItemEventOut, ActorOut
+from app.domain.v1.item.schema import FixRequestBody, ItemEditIn, ItemEditOut, ItemReportRequest, ItemEventOut, ActorOut, ItemAckOut
 from app.domain.v1.item.service import ItemService
 from app.domain.v1.item.service import status_label, norm
 from app.utils.helper.helper import (
     require_role,
     require_same_line,
-    precondition_if_unmodified_since,
     TZ
 )
 from fastapi.responses import StreamingResponse
@@ -104,6 +103,16 @@ async def edit_item(
     require_role(user, ["OPERATOR", "INSPECTOR"])
     item = await svc.edit_item(item_id, payload)
     return ItemEditOut.model_validate(item)
+
+@router.post("/{item_id}/ack", response_model=ItemAckOut)
+async def acknowledge_item(
+    item_id: int,
+    user: User = Depends(get_current_user),
+    svc: ItemService = Depends(get_service),
+):
+    require_role(user, ["OPERATOR", "INSPECTOR"])
+    return await svc.ack_item(item_id, getattr(user, "id", None))
+
 
 @router.get("/{item_id}/history", response_model=List[ItemEventOut])
 async def get_item_history(
@@ -188,8 +197,6 @@ async def submit_fix_request(
     if not it or it.deleted_at:
         raise HTTPException(status_code=404, detail="Item not found")
     require_same_line(user, it)
-
-    precondition_if_unmodified_since(request, it.updated_at)
 
     is_pening_review = False
 
@@ -289,44 +296,6 @@ async def submit_fix_request(
 
     await db.commit()
     return {"review_id": rv.id}
-
-@router.post("/{item_id}/scrap")
-async def mark_scrap(
-    request: Request,
-    item_id: int,
-    db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    require_role(user, ["OPERATOR", "INSPECTOR"])
-    it = await db.get(Item, item_id)
-    if not it or it.deleted_at:
-        raise HTTPException(status_code=404, detail="Item not found")
-    require_same_line(user, it)
-
-    precondition_if_unmodified_since(request, it.updated_at)
-
-    st_code = (await db.execute(select(ItemStatus.code).where(ItemStatus.id == it.item_status_id))).scalar()
-
-    review_id = None
-    if st_code == "SCRAP":
-        it.scrap_confirmed_by = user.id
-        it.scrap_confirmed_at = datetime.utcnow()
-        db.add(ItemEvent(item_id=it.id, actor_id=user.id, event_type="OPERATOR_CONFIRM_SCRAP", to_status_id=it.item_status_id))
-    elif st_code == "RECHECK":
-        # move to SCRAP and open a pending review for QC
-        scrap_id = (await db.execute(select(ItemStatus.id).where(ItemStatus.code == "SCRAP"))).scalar_one()
-        it.item_status_id = scrap_id
-        it.scrap_requires_qc = True
-        rv = Review(item_id=it.id, review_type="SCRAP_FROM_RECHECK", state="PENDING", submitted_by=user.id)
-        db.add(rv)
-        await db.flush()
-        review_id = rv.id
-        db.add(ItemEvent(item_id=it.id, actor_id=user.id, event_type="SCRAP_FROM_RECHECK", to_status_id=scrap_id))
-    else:
-        raise HTTPException(status_code=400, detail="Scrap allowed only when status is SCRAP or RECHECK")
-
-    await db.commit()
-    return {"ok": True, "review_id": review_id}
 
 @router.get("/{item_id}/images")
 async def list_item_images(

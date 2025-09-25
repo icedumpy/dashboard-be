@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 from app.core.db.repo.models import User, Item, ItemImage, ProductionLine, Role
-
+from sqlalchemy.dialects import postgresql
 
 
 IMAGES_DIR = settings.IMAGES_DIR
@@ -40,17 +40,6 @@ def require_same_line(user: User, item: Item):
     if user.line_id != item.line_id:
         raise HTTPException(status_code=403, detail="Cross-line operation not allowed")
 
-def precondition_if_unmodified_since(request: Request, last_updated_at: datetime):
-    ims = request.headers.get("If-Unmodified-Since")
-    if not ims:
-        return
-    try:
-        # Expect RFC1123 or ISO8601; accept ISO for simplicity
-        ts = datetime.fromisoformat(ims.replace("Z","+00:00"))
-        if last_updated_at and last_updated_at > ts:
-            raise HTTPException(status_code=412, detail="Precondition Failed")
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid If-Unmodified-Since")
 
 def safe_fs_path(relpath: str) -> Path:
     """
@@ -68,7 +57,13 @@ def safe_fs_path(relpath: str) -> Path:
 
     return fs
 
-
+def print_sql(query):
+    compiled = query.compile(
+        dialect=postgresql.dialect(),
+        compile_kwargs={"literal_binds": True}  # inline params
+    )
+    print(str(compiled).replace("\n", " "))
+    
 def _subdir_for(kind: str) -> str:
     k = (kind or "FIX").upper()
     return "capture" if k == "DETECTED" else ("resolved" if k == "FIX" else "other")
