@@ -12,7 +12,7 @@ from sqlalchemy.orm import aliased
 from sqlalchemy import select, update, delete, insert, or_, func, case, and_, asc, desc, exists, literal, literal_column, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.v1.item.schema import FixRequestBody, ItemEditIn
+from app.domain.v1.item.schema import FixRequestBody, ItemEditIn, ItemAckOut
 from app.utils.helper.helper import current_shift_window, TZ
 from app.utils.helper.paginate import paginate
 from app.core.db.repo.models import EStation, EItemStatusCode, DefectType, User, ItemSortField, EOrderBy
@@ -265,6 +265,34 @@ class ItemService:
         await self.db.refresh(item)
         return item
 
+    async def ack_item(self, item_id: int, user_id: int):
+        stmt = select(Item).where(Item.id == item_id).with_for_update()
+        item = (await self.db.execute(stmt)).scalar_one_or_none()
+
+        if not item:
+            raise HTTPException(status_code=404, detail="Item not found")
+
+        if item.acknowledged_at is not None and item.acknowledged_by is not None:
+            return ItemAckOut(
+                id=item.id,
+                acknowledged_at=item.acknowledged_at,
+                acknowledged_by=item.acknowledged_by,
+                changed=False,
+            )
+
+        item.acknowledged_at = datetime.now(TZ)
+        item.acknowledged_by = user_id
+
+        await self.db.commit()
+        await self.db.refresh(item)
+
+        return ItemAckOut(
+            id=item.id,
+            acknowledged_at=item.acknowledged_at,
+            acknowledged_by=item.acknowledged_by,
+            changed=True,
+        )
+
     def _apply_role_default_window(self, q, user_role: str):
         now = datetime.now(TZ)
         if user_role == "VIEWER":
@@ -366,10 +394,6 @@ class ItemService:
         return q
 
     def _add_bundle_roll_fallback(self, q):
-        """
-        Join a correlated LATERAL subquery that finds the latest ROLL row.
-        Then ADD computed columns (eff_*), rather than replacing the original columns.
-        """
         ri = aliased(Item, name="ri")
 
         roll_lat = (
@@ -445,7 +469,6 @@ def build_item_filters(
     detected_from: Optional[datetime] = None,
     detected_to: Optional[datetime] = None,
 ) -> list[BinaryExpression]:
-    """Return SQLAlchemy WHERE clauses matching list_items semantics."""
     clauses: list[BinaryExpression] = [Item.deleted_at.is_(None)]
 
     if line_id is not None:

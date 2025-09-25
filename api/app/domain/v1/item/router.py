@@ -19,13 +19,12 @@ from app.core.db.repo.models import (
     EStation,EItemStatusCode,User
 )
 
-from app.domain.v1.item.schema import FixRequestBody, ItemEditIn, ItemEditOut, ItemReportRequest, ItemEventOut, ActorOut
+from app.domain.v1.item.schema import FixRequestBody, ItemEditIn, ItemEditOut, ItemReportRequest, ItemEventOut, ActorOut, ItemAckOut
 from app.domain.v1.item.service import ItemService
 from app.domain.v1.item.service import status_label, norm
 from app.utils.helper.helper import (
     require_role,
     require_same_line,
-    precondition_if_unmodified_since,
     TZ
 )
 from fastapi.responses import StreamingResponse
@@ -104,6 +103,16 @@ async def edit_item(
     require_role(user, ["OPERATOR", "INSPECTOR"])
     item = await svc.edit_item(item_id, payload)
     return ItemEditOut.model_validate(item)
+
+@router.post("/{item_id}/ack", response_model=ItemAckOut)
+async def acknowledge_item(
+    item_id: int,
+    user: User = Depends(get_current_user),
+    svc: ItemService = Depends(get_service),
+):
+    require_role(user, ["OPERATOR", "INSPECTOR"])
+    return await svc.ack_item(item_id, getattr(user, "id", None))
+
 
 @router.get("/{item_id}/history", response_model=List[ItemEventOut])
 async def get_item_history(
@@ -188,8 +197,6 @@ async def submit_fix_request(
     if not it or it.deleted_at:
         raise HTTPException(status_code=404, detail="Item not found")
     require_same_line(user, it)
-
-    precondition_if_unmodified_since(request, it.updated_at)
 
     is_pening_review = False
 
