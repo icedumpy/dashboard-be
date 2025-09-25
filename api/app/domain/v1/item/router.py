@@ -1,27 +1,27 @@
 # app/domain/v1/items_router.py
-from fastapi import APIRouter, Query, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Query, Depends, HTTPException, Request
 from typing import Optional, Annotated, List
 from decimal import Decimal, ROUND_HALF_UP
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_, and_, literal, text
 from sqlalchemy.orm import aliased
-from sqlalchemy.exc import IntegrityError
 
-from datetime import datetime, timedelta
+
+from datetime import datetime
 from app.core.config.config import settings
 from io import StringIO
 
 from app.core.db.session import get_db
 from app.core.security.auth import get_current_user
 from app.core.db.repo.models import (
-    Item, ItemStatus, ProductionLine, ItemDefect, DefectType,
+    EOrderBy, Item, ItemSortField, ItemStatus, ProductionLine, ItemDefect, DefectType,
     Review, ItemImage, ItemEvent,
-    StatusChangeRequest,
     EStation,EItemStatusCode,User
 )
 
-from app.domain.v1.item.item_schema import FixRequestBody, ItemEditIn, ItemEditOut, ItemReportRequest, ItemEventOut, ActorOut
-from app.domain.v1.item.item_service import summarize_station, status_label, norm
+from app.domain.v1.item.schema import FixRequestBody, ItemEditIn, ItemEditOut, ItemReportRequest, ItemEventOut, ActorOut
+from app.domain.v1.item.service import ItemService
+from app.domain.v1.item.service import status_label, norm
 from app.utils.helper.helper import (
     require_role,
     require_same_line,
@@ -37,11 +37,16 @@ router = APIRouter()
 
 log = logging.getLogger(__name__)
 
+def get_service(db: AsyncSession = Depends(get_db)) -> ItemService:
+    return ItemService(db)
+
 # ---------- GET /items ----------
 @router.get("", summary="List items")
 async def list_items(
     page: int = Query(1, ge=1, description="1-based page index"),
     page_size: int = Query(10, ge=1, le=100, description="items per page (max 100)"),
+    sort_by: Annotated[Optional[ItemSortField], Query(description="field to sort by")] = None,
+    order_by: Annotated[Optional[EOrderBy], Query(description="order direction (asc or desc)")] = None,
 
     station: Annotated[Optional[EStation], Query(description="filter by station")] = None,
     line_id: Optional[int] = Query(None, description="e.g. 1 = Line 3, 2 = Line 4"),
@@ -56,290 +61,49 @@ async def list_items(
 
     detected_from: Optional[datetime] = Query(None, description="ISO8601"),
     detected_to: Optional[datetime] = Query(None, description="ISO8601"),
-    db: AsyncSession = Depends(get_db),
+
     user: User = Depends(get_current_user),
-    
+    svc: ItemService = Depends(get_service),
 ):
     require_role(user, ["VIEWER", "OPERATOR", "INSPECTOR"])
-    page_size = max(1, min(page_size, 100))
-    offset = (page - 1) * page_size
-    
-    q = select(Item).where(Item.deleted_at.is_(None))
-
-    q = q.join(ItemStatus, Item.item_status_id == ItemStatus.id)
-    if line_id:
-        q = q.join(ProductionLine, Item.line_id == ProductionLine.id)
-
-    if station: q = q.where(Item.station == station)
-    if line_id: q = q.where(ProductionLine.id == line_id)
-    if product_code: q = q.where(Item.product_code.ilike(f"%{product_code}%"))
-    if number:
-        q = q.where(
-            (Item.roll_number.ilike(f"%{number}%")) |
-            (Item.bundle_number.ilike(f"%{number}%"))
-        )
-    if roll_id: q = q.where(Item.roll_id.ilike(f"%{roll_id}%"))
-    if job_order_number: q = q.where(Item.job_order_number.ilike(f"%{job_order_number}%"))
-    if roll_width_min is not None: q = q.where(Item.roll_width >= roll_width_min)
-    if roll_width_max is not None: q = q.where(Item.roll_width <= roll_width_max)
-    if status: 
-        station_values = [s.value for s in (status or [])]
-        q = q.where(ItemStatus.code.in_(station_values))
-
-    if detected_from: q = q.where(text("qc.items.detected_at >= :df")).params(df=detected_from)
-    if detected_to: q = q.where(text("qc.items.detected_at <= :dt")).params(dt=detected_to)
-    
-    if detected_from is None and detected_to is None:
-        now = datetime.now(TZ)
-
-        if user.role == "VIEWER":
-            # subtract 365 days (approx 1 year)
-            dt = now - timedelta(days=365)
-            q = q.where(text("qc.items.detected_at >= :dt")).params(dt=dt)
-
-        elif user.role == "OPERATOR":
-            # subtract 30 days
-            dt = now - timedelta(days=30)
-            q = q.where(text("qc.items.detected_at >= :dt")).params(dt=dt)
-    
-
-    q = q.order_by(ItemStatus.display_order.asc(), Item.detected_at.desc(), Item.id.desc())
-
-    total = (await db.execute(q.with_only_columns(text("count(*)")).order_by(None))).scalar()
-
-    rows = (await db.execute(q.offset(offset).limit(page_size))).scalars().all()
-    
-    summary = await summarize_station(
-        db,
-        line_id=line_id,
+    return await svc.list_items(
+        page=page,
+        page_size=page_size,
+        sort_by=sort_by,
+        order_by=order_by,
+        user_role=user.role,
         station=station,
+        line_id=line_id,
         product_code=product_code,
         number=number,
         job_order_number=job_order_number,
         roll_width_min=roll_width_min,
         roll_width_max=roll_width_max,
+        roll_id=roll_id,
         status=status,
         detected_from=detected_from,
         detected_to=detected_to,
     )
-
-    data = []
-    for it in rows:
-        imgs = (await db.execute(
-            select(text("count(*)")).select_from(ItemImage).where(ItemImage.item_id == it.id)
-        )).scalar()
-        item_defects = await db.execute(
-            select(DefectType.name_th).join(ItemDefect, DefectType.id == ItemDefect.defect_type_id).where(ItemDefect.item_id == it.id)
-        )
-        defs = item_defects.unique().scalars().all()
-        
-        st = (await db.execute(select(ItemStatus.code).where(ItemStatus.id == it.item_status_id))).scalar()
-
-        if it.station == EStation.BUNDLE:
-            q = (
-                select(Item)
-                .where(
-                    Item.station == EStation.ROLL,              
-                    Item.roll_number == it.bundle_number,
-                    Item.line_id == it.line_id,           
-                    Item.deleted_at.is_(None),             
-                )
-                .order_by(Item.detected_at.desc(), Item.id.desc()) 
-                .limit(1)
-            )
-            roll_item = (await db.execute(q)).scalars().first()
-            it.product_code = roll_item.product_code if roll_item is not None else None
-            it.job_order_number = roll_item.job_order_number if roll_item is not None else None
-            it.roll_width = roll_item.roll_width if roll_item is not None else None
-
-        is_pending_review = False
-
-        if it.current_review_id != None:
-            review_data = (await db.execute(select(Review).where(Review.id == it.current_review_id))).scalar()
-            is_pending_review = review_data.state == "PENDING" if review_data is not None else False
-
-        change_status_data = (await db.execute(select(StatusChangeRequest).where(and_(StatusChangeRequest.item_id == it.id, StatusChangeRequest.state == "PENDING")))).scalar()
-        is_changing_status_pending = True if change_status_data is not None else False
-        
-
-
-        data.append({
-            "id": it.id,
-            "station": it.station,
-            "line_id": it.line_id,
-            "product_code": it.product_code,
-            "roll_number": it.roll_number,
-            "bundle_number": it.bundle_number,
-            "job_order_number": it.job_order_number,
-            "roll_width": float(it.roll_width) if it.roll_width is not None else None,
-            "roll_id": it.roll_id,
-            "detected_at": it.detected_at.isoformat(),
-            "status_code": st,
-            "scrap_requires_qc": it.scrap_requires_qc,
-            "scrap_confirmed_by": it.scrap_confirmed_by,
-            "scrap_confirmed_at": it.scrap_confirmed_at.isoformat() if it.scrap_confirmed_at else None,
-            "current_review_id": it.current_review_id,
-            "is_pending_review": is_pending_review,
-            "is_changing_status_pending": is_changing_status_pending,
-            "images": imgs,
-            "defects": defs,
-        })
-
-    resp = {
-        "data": data,
-        "summary": summary,
-        "pagination": {
-            "page": page, 
-            "page_size": page_size,
-            "total": total, 
-            "total_pages": (total + page_size - 1) // page_size
-        }
-    }
-    return resp
-
+    
 @router.get("/{item_id}")
 async def get_item_detail(
     item_id: int,
-    db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
+    svc: ItemService = Depends(get_service),
 ):
     require_role(user, ["VIEWER", "OPERATOR", "INSPECTOR"])
-    it = (await db.get(Item, item_id))
-    if not it or it.deleted_at:
-        raise HTTPException(status_code=404, detail="Item not found")
-
-    st = (await db.execute(select(ItemStatus.code).where(ItemStatus.id == it.item_status_id))).scalar()
-
-    defs = (await db.execute(
-        select(DefectType.code, ItemDefect.meta)
-        .join(ItemDefect, DefectType.id == ItemDefect.defect_type_id)
-        .where(ItemDefect.item_id == it.id)
-    )).all()
-
-    imgs = (await db.execute(
-        select(ItemImage.id, ItemImage.kind, ItemImage.path)
-        .where(ItemImage.item_id == it.id)
-        .order_by(ItemImage.uploaded_at.desc())
-    )).all()
-    grouped = {"DETECTED": [], "FIX": [], "OTHER": []}
-    for iid, kind, path in imgs:
-        grouped.setdefault(kind, []).append({"id": iid, "path": path})
-
-    rws = (await db.execute(
-        select(Review).where(Review.item_id == it.id).order_by(Review.submitted_at.desc())
-    )).scalars().all()
-    user_ids = {
-        *[rv.submitted_by for rv in rws if rv.submitted_by is not None],
-        *[rv.reviewed_by for rv in rws if rv.reviewed_by is not None],
-    }
-
-    user_map: dict[int, dict] = {}
-    if user_ids:
-        users = (await db.execute(select(User).where(User.id.in_(user_ids)))).scalars().all()
-        user_map = {
-            u.id: {
-                "id": u.id,
-                "username": getattr(u, "username", None),
-                "display_name": (
-                    getattr(u, "display_name", None)
-                    or getattr(u, "name", None)
-                    or getattr(u, "full_name", None)
-                ),
-                "role": getattr(u, "role", None),
-            }
-            for u in users
-        }
-
-    return {
-        "data": {
-            "id": it.id,
-            "station": it.station,
-            "line_id": it.line_id,
-            "product_code": it.product_code,
-            "roll_id": it.roll_id,
-            "roll_number": it.roll_number,
-            "bundle_number": it.bundle_number,
-            "job_order_number": it.job_order_number,
-            "roll_width": float(it.roll_width) if it.roll_width is not None else None,
-            "detected_at": it.detected_at.isoformat(),
-            "status_code": st,
-            "ai_note": it.ai_note,
-            "scrap_requires_qc": it.scrap_requires_qc,
-            "scrap_confirmed_by": it.scrap_confirmed_by,
-            "scrap_confirmed_at": it.scrap_confirmed_at.isoformat() if it.scrap_confirmed_at else None,
-            "current_review_id": it.current_review_id,
-        },
-        "defects": [{"defect_type_code": c, "meta": m} for c, m in defs],
-        "images": grouped,
-        "reviews": [
-            {
-                "id": rv.id, "review_type": rv.review_type, "state": rv.state,
-                "submitted_by": rv.submitted_by, "submitted_at": rv.submitted_at.isoformat(),
-                "submitted_by_user": user_map.get(rv.submitted_by),
-                "reviewed_by": rv.reviewed_by, "reviewed_at": rv.reviewed_at.isoformat() if rv.reviewed_at else None,
-                "reviewed_by_user": user_map.get(rv.reviewed_by),
-                "submit_note": rv.submit_note, "review_note": rv.review_note, "reject_reason": rv.reject_reason
-            } for rv in rws
-        ]
-    }
+    return await svc.get_item_detail(item_id)
 
 @router.patch("/{item_id}", response_model=ItemEditOut)
 async def edit_item(
     item_id: int,
     payload: ItemEditIn,
-    db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
+    svc: ItemService = Depends(get_service),
 ):
     require_role(user, ["OPERATOR", "INSPECTOR"])
-
-    stmt = (
-        select(Item)
-        .where(Item.id == item_id)
-        .with_for_update()
-    )
-    item = (await db.execute(stmt)).scalar_one_or_none()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
-
-    data = payload.model_dump(exclude_unset=True)
-
-    if not data:
-        raise HTTPException(status_code=400, detail="No fields to update")
-
-    def _trim(val: Optional[str]) -> Optional[str]:
-        return val.strip() if isinstance(val, str) else val
-
-    if "product_code" in data:
-        item.product_code = _trim(data["product_code"])
-    if "roll_number" in data:
-        item.roll_number = _trim(data["roll_number"])
-    if "bundle_number" in data:
-        item.bundle_number = _trim(data["bundle_number"])
-    if "job_order_number" in data:
-        item.job_order_number = _trim(data["job_order_number"])
-    if "roll_id" in data:
-        item.roll_id = _trim(data["roll_id"])
-
-    if "roll_width" in data:
-        if data["roll_width"] is None:
-            item.roll_width = None
-        else:
-            q = Decimal(str(data["roll_width"])).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            if abs(q) >= Decimal("100000000"):
-                raise HTTPException(status_code=422, detail="roll_width out of range for Numeric(10,2)")
-            item.roll_width = q
-
-    try:
-        await db.flush()
-        await db.commit()
-    except IntegrityError as e:
-        await db.rollback()
-        raise HTTPException(status_code=409, detail="Integrity error while updating item")
-
-    await db.refresh(item)
-
+    item = await svc.edit_item(item_id, payload)
     return ItemEditOut.model_validate(item)
-
 
 @router.get("/{item_id}/history", response_model=List[ItemEventOut])
 async def get_item_history(
@@ -608,7 +372,6 @@ async def get_csv_item_report(
 
     roll_match = aliased(Item)
 
-    # build base columns first
     base_cols = [
         Item.id.label("item_id"),
         Item.station,
@@ -623,7 +386,6 @@ async def get_csv_item_report(
         ItemStatus.code.label("status_code"),
     ]
 
-    # add r_* columns depending on station
     if body.station == EStation.BUNDLE:
         base_cols += [
             roll_match.product_code.label("r_product_code"),
@@ -654,7 +416,6 @@ async def get_csv_item_report(
             ),
         )
 
-    # filters
     if body.product_code:
         like = f"%{body.product_code}%"
         if body.station == EStation.BUNDLE:
@@ -690,7 +451,6 @@ async def get_csv_item_report(
 
     base_sq = base.subquery("base")
 
-    # defects only for items in base
     defects_subq = (
         select(
             ItemDefect.item_id.label("item_id"),
@@ -702,7 +462,6 @@ async def get_csv_item_report(
         .subquery()
     )
 
-    # final query: NO DISTINCT, order for streaming
     q = (
         select(
             base_sq.c.item_id,
@@ -754,7 +513,7 @@ async def get_csv_item_report(
     async def acsv_iter():
         buf = StringIO()
         writer = csv.writer(buf, lineterminator="\n")
-        THRESHOLD = 256 * 1024  # ~256 KiB
+        THRESHOLD = 256 * 1024 
 
         try:
             writer.writerow(header)

@@ -1,12 +1,12 @@
 from fastapi import APIRouter
 from . import health
-from .item.item_router import router as item_router
-from .auth.auth_router import router as auth_router
-from .image.image_router import router as image_router
-from .production_line.production_line_router import router as production_line_router
-from .review.review_router import router as review_router
-from .defect_type.defect_type_router import router as defect_type_router
-from .change_status.change_status_router import router as change_status_router
+from .item.router import router as item_router
+from .auth.router import router as auth_router
+from .image.router import router as image_router
+from .production_line.router import router as production_line_router
+from .review.router import router as review_router
+from .defect_type.router import router as defect_type_router
+from .change_status.router import router as change_status_router
 
 router = APIRouter()
 

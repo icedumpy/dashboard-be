@@ -1,7 +1,7 @@
 # app/core/db/repo/qc/models.py
 from __future__ import annotations
 from enum import Enum
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Literal
 from sqlalchemy import (
     String, Boolean, ForeignKey, UniqueConstraint, Numeric, Text,
     func, Integer, Index
@@ -17,6 +17,7 @@ StationEnum      = PGEnum("ROLL", "BUNDLE", name="station",  create_type=False)
 ReviewTypeEnum   = PGEnum("DEFECT_FIX", "SCRAP_FROM_RECHECK", "REQUEST_STATUS_CHANGE", name="review_type",  create_type=False)
 ReviewStateEnum  = PGEnum("PENDING", "APPROVED", "REJECTED", name="review_state",  create_type=False)
 ImageKindEnum    = PGEnum("DETECTED", "FIX", "OTHER", name="image_kind",  create_type=False)
+Role = Literal["INSPECTOR", "OPERATOR", "VIEWER"]
 
 class EStation(str, Enum):
     ROLL = "ROLL"
@@ -42,6 +43,10 @@ class EItemStatusCode(str, Enum):
     RECHECK = "RECHECK"
     NORMAL = "NORMAL"
     QC_PASSED = "QC_PASSED"
+
+class EOrderBy(str, Enum):
+    ASC = "asc"
+    DESC = "desc"
 
 # =========================
 # Master tables
@@ -172,6 +177,19 @@ class Item(Base):
         cascade="all, delete-orphan",
     )
 
+class ItemSortField(str, Enum):
+    id = "id"
+    station = "station"
+    line_id = "line_id"
+    product_code = "product_code"
+    roll_number = "roll_number"
+    bundle_number = "bundle_number"
+    job_order_number = "job_order_number"
+    roll_width = "roll_width"
+    roll_id = "roll_id"
+    detected_at = "detected_at"
+    status_code = "status_code"
+
 # Helpful ORM-side indexes (optional; DB has them already in migration)
 Index("ix_qc_items_status_time", Item.item_status_id, Item.detected_at.desc())
 Index("ix_qc_items_line_time", Item.line_id, Item.detected_at.desc())
@@ -248,6 +266,19 @@ class Review(Base):
 
     item: Mapped["Item"] = relationship(back_populates="reviews")
 
+class ReviewSortField(str, Enum):
+    production_line = "production_line"
+    station = "station"
+    product_code = "product_code"
+    number = "number"
+    job_order = "job_order_number"
+    state = "state"
+    decision = "decision"
+    reviewed_by = "reviewed_by"
+    reviewed_at = "reviewed_at"
+    submitted_at = "submitted_at"
+
+
 # =========================
 # Item images
 # =========================
@@ -321,7 +352,16 @@ class StatusChangeRequest(Base):
         back_populates="request", cascade="all, delete-orphan"
     )
 
-
+class StatusChangeSortField(str, Enum):
+    production_line = "production_line"
+    station = "station"
+    product_code = "product_code"
+    number = "number"
+    job_order_number = "job_order_number"
+    status_before = "status_before"
+    status_after = "status_after"
+    requested_at = "requested_at"
+    
 class StatusChangeRequestDefect(Base):
     __tablename__ = "status_change_request_defects"
     __table_args__ = {"schema": "qc"}

@@ -1,21 +1,25 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Annotated
 import math
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, insert, delete, text, and_
-from sqlalchemy.orm import selectinload
+from sqlalchemy import select, update, insert, delete, text, and_, literal
+from sqlalchemy.orm import selectinload, aliased
 from sqlalchemy.sql import func
 
 from app.core.db.session import get_db
 from app.core.security.auth import get_current_user
-from app.core.db.repo.models import StatusChangeRequest, StatusChangeRequestDefect, ItemEvent, Item, ItemDefect, DefectType, ItemStatus
-from app.domain.v1.change_status.change_status_schema import StatusChangeRequestOut, DecisionRequestBody, StatusChangeRequestCreate, ListResponseOut, SummaryOut, PaginationOut, ListResponseOut
+from app.core.db.repo.models import StatusChangeRequest, StatusChangeRequestDefect, ItemEvent, Item, ItemDefect, DefectType, ItemStatus, StatusChangeSortField, EOrderBy
+from app.domain.v1.change_status.schema import StatusChangeRequestOut, DecisionRequestBody, StatusChangeRequestCreate, ListResponseOut, SummaryOut, PaginationOut, ListResponseOut
+from app.domain.v1.change_status.service import ChangeStatusService
 from app.utils.helper.helper import (
     require_role,
 )
 
 router = APIRouter()
+
+def get_service(db: AsyncSession = Depends(get_db)) -> ChangeStatusService:
+    return ChangeStatusService(db)
 
 async def _validate_defect_type_ids(db: AsyncSession, ids: list[int]) -> list[int]:
     uniq = sorted({int(x) for x in ids or []})
@@ -196,7 +200,7 @@ async def create_status_change_request(
     except Exception:
         await db.rollback()
         raise
-    
+
 @router.get("", response_model=ListResponseOut)
 async def list_status_change_requests(
     page: int = Query(1, ge=1, description="1-based page index"),
@@ -205,104 +209,23 @@ async def list_status_change_requests(
     station: Optional[Literal["ROLL", "BUNDLE"]] = Query(
         None, description='filter by station type: "ROLL" or "BUNDLE"'
     ),
+    sort_by: Annotated[Optional[StatusChangeSortField], Query(description="field to sort by")] = None,
+    order_by: Annotated[Optional[EOrderBy], Query(description="order direction (asc or desc)")] = None,
     db: AsyncSession = Depends(get_db),
     user = Depends(get_current_user),
+    svc: ChangeStatusService = Depends(get_service),
 ):
     require_role(user, ["OPERATOR", "INSPECTOR"])
 
-    page_size = max(1, min(page_size, 100))
-    offset = (page - 1) * page_size
-
-    # ----- build filters once -----
-    where_clauses = []
-    if line_id is not None:
-        where_clauses.append(Item.line_id == line_id)
-    if station is not None:
-        # If you use an enum for Item.station, map here: Item.station == StationEnum[station]
-        where_clauses.append(Item.station == station)
-    where_clauses.append(StatusChangeRequest.state == "PENDING")
-
-    # ----- list page (with eager-load to avoid MissingGreenlet) -----
-    list_q = (
-        select(StatusChangeRequest)
-        .join(Item, Item.id == StatusChangeRequest.item_id)
-        .where(and_(*where_clauses)) if where_clauses else
-        select(StatusChangeRequest)
-        .join(Item, Item.id == StatusChangeRequest.item_id)
+    return await svc.list_requests(
+        page=page,
+        page_size=page_size,
+        line_id=line_id,
+        station=station,
+        sort_by=sort_by,
+        order_by=order_by,
     )
-    list_q = (
-        list_q.options(selectinload(StatusChangeRequest.defects))
-        .order_by(StatusChangeRequest.state.asc(), StatusChangeRequest.requested_at.desc())
-        .offset(offset)
-        .limit(page_size)
-    )
-
-    rows = (await db.execute(list_q)).scalars().all()
-
-    data: List[StatusChangeRequestOut] = [
-        StatusChangeRequestOut(
-            id=r.id,
-            item_id=r.item_id,
-            from_status_id=r.from_status_id,
-            to_status_id=r.to_status_id,
-            state=r.state,
-            requested_by=r.requested_by,
-            requested_at=r.requested_at.isoformat()
-                if hasattr(r.requested_at, "isoformat") else str(r.requested_at),
-            approved_by=r.approved_by,
-            approved_at=r.approved_at.isoformat()
-                if r.approved_at and hasattr(r.approved_at, "isoformat")
-                else (str(r.approved_at) if r.approved_at else None),
-            reason=r.reason,
-            meta=r.meta,
-            defect_type_ids=[d.defect_type_id for d in (r.defects or [])],
-        )
-        for r in rows
-    ]
-
-    # ----- total & total_pages (respect filters) -----
-    count_q = (
-        select(func.count())
-        .select_from(StatusChangeRequest)
-        .join(Item, Item.id == StatusChangeRequest.item_id)
-        .where(and_(*where_clauses))
-        if where_clauses
-        else select(func.count()).select_from(StatusChangeRequest)
-        .join(Item, Item.id == StatusChangeRequest.item_id)
-    )
-    total: int = (await db.scalar(count_q)) or 0
-    total_pages = math.ceil(total / page_size) if page_size else 0
-
-    # ----- summary (roll / bundle / total) respecting the same filters -----
-    summary_q = (
-        select(Item.station, func.count(StatusChangeRequest.id))
-        .join(Item, Item.id == StatusChangeRequest.item_id)
-        .where(and_(*where_clauses))
-        .group_by(Item.station)
-        if where_clauses
-        else select(Item.station, func.count(StatusChangeRequest.id))
-        .join(Item, Item.id == StatusChangeRequest.item_id)
-        .group_by(Item.station)
-    )
-    station_counts = (await db.execute(summary_q)).all()
-    by_station = {k: v for k, v in station_counts}
-    roll_cnt = int(by_station.get("ROLL", 0))
-    bundle_cnt = int(by_station.get("BUNDLE", 0))
-
-    return ListResponseOut(
-        data=data,
-        summary=SummaryOut(
-            roll=roll_cnt,
-            bundle=bundle_cnt,
-            total=int(total),
-        ),
-        pagination=PaginationOut(
-            page=page,
-            page_size=page_size,
-            total=int(total),
-            total_pages=total_pages,
-        ),
-    )
+    
     
 @router.patch("/{request_id}/decision", response_model=StatusChangeRequestOut)
 async def decide_status_change_request(

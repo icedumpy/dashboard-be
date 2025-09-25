@@ -6,17 +6,20 @@ from datetime import datetime
 
 
 from app.core.db.session import get_db
+from app.domain.v1.review.service import ReviewService
 from app.core.security.auth import get_current_user
-from app.core.db.repo.models import User
 from app.core.db.repo.models import (
-    ItemStatus, Review, ItemEvent, Item, ItemDefect, DefectType,EReviewState
+    ItemStatus, Review, ItemEvent, Item, ItemDefect, DefectType,EReviewState,
+    ReviewSortField, EOrderBy, User
 )
-from app.domain.v1.review.review_schema import DecisionRequestBody
+from app.domain.v1.review.schema import DecisionRequestBody
 from app.utils.helper.helper import (
     require_role,
 )
 from zoneinfo import ZoneInfo
 import json
+from datetime import datetime, timedelta
+from typing import Optional, Annotated
 
 
 TH = ZoneInfo("Asia/Bangkok")
@@ -24,13 +27,17 @@ TH = ZoneInfo("Asia/Bangkok")
 router = APIRouter()
 
 
-from datetime import datetime, timedelta
-from typing import Optional, Annotated
+
+
+def get_service(db: AsyncSession = Depends(get_db)) -> ReviewService:
+    return ReviewService(db)
 
 @router.get("")
 async def list_reviews(
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
+    sort_by: Annotated[Optional[ReviewSortField], Query(description="field to sort by")] = None,
+    order_by: Annotated[Optional[EOrderBy], Query(description="order direction (asc or desc)")] = None,
     line_id: Optional[int] = Query(None),
     review_state: Annotated[list[EReviewState] | None, Query()] = None,
     defect_type_id: Optional[int] = Query(None),
@@ -42,212 +49,24 @@ async def list_reviews(
 
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
+    svc: ReviewService = Depends(get_service),
 ):
     require_role(user, ["VIEWER", "INSPECTOR"])
-    page_size = max(1, min(page_size, 100))
-    offset = (page - 1) * page_size
-
-    rn = func.row_number().over(
-        partition_by=Review.item_id,
-        order_by=(Review.updated_at.desc(), Review.id.desc())
-    ).label("rn")
-
-    base_cols = (
-        select(
-            Review.id.label("rid"),
-            Review.item_id.label("iid"),
-            Review.state.label("state"),
-            Review.updated_at.label("r_updated_at"),
-            Item.detected_at.label("i_detected_at"),
-            Item.id.label("item_pk"),
-            rn,
-        )
-        .join(Item, Item.id == Review.item_id)
-        .join(ItemStatus, Item.item_status_id == ItemStatus.id)
+    return await svc.list_reviews(
+        page=page,
+        page_size=page_size,
+        sort_by=sort_by,
+        order_by=order_by,
+        line_id=line_id,
+        review_state=review_state,
+        defect_type_id=defect_type_id,
+        reviewed_at_from=reviewed_at_from,
+        reviewed_at_to=reviewed_at_to,
+        submitted_at_from=submitted_at_from,
+        submitted_at_to=submitted_at_to,
     )
 
-    if line_id:
-        base_cols = base_cols.where(Item.line_id == line_id)
-    if defect_type_id:
-        base_cols = base_cols.join(ItemDefect, ItemDefect.item_id == Item.id).where(
-            ItemDefect.defect_type_id == defect_type_id
-        )
-    if review_state:
-        base_cols = base_cols.where(Review.state.in_(review_state))
-    if reviewed_at_from:
-        base_cols = base_cols.where(Review.reviewed_at >= reviewed_at_from)
-    if reviewed_at_to:
-        base_cols = base_cols.where(Review.reviewed_at <= reviewed_at_to)
-    if submitted_at_from:
-        base_cols = base_cols.where(Review.created_at >= submitted_at_from)
-    if submitted_at_to:
-        base_cols = base_cols.where(Review.created_at <= submitted_at_to)
 
-    s = base_cols.subquery("s")
-
-    total = await db.scalar(
-        select(func.count()).select_from(select(s.c.rid).where(s.c.rn == 1).subquery())
-    )
-
-    ids_q = (
-        select(s.c.rid)
-        .where(s.c.rn == 1)
-        .order_by(s.c.r_updated_at.desc(), s.c.i_detected_at.desc(), s.c.item_pk.desc())
-        .offset(offset)
-        .limit(page_size)
-    )
-    review_ids = [row[0] for row in (await db.execute(ids_q)).all()]
-
-    rn2 = func.row_number().over(
-        partition_by=Review.item_id,
-        order_by=(Review.updated_at.desc(), Review.id.desc())
-    ).label("rn")
-
-    sum_cols = (
-        select(
-            Review.state.label("state"),
-            rn2,
-        )
-        .join(Item, Item.id == Review.item_id)
-    )
-
-    if line_id:
-        sum_cols = sum_cols.where(Item.line_id == line_id)
-    if defect_type_id:
-        sum_cols = sum_cols.join(ItemDefect, ItemDefect.item_id == Item.id).where(
-            ItemDefect.defect_type_id == defect_type_id
-        )
-    if review_state:
-        sum_cols = sum_cols.where(Review.state.in_(review_state))
-    if reviewed_at_from:
-        sum_cols = sum_cols.where(Review.reviewed_at >= reviewed_at_from)
-    if reviewed_at_to:
-        sum_cols = sum_cols.where(Review.reviewed_at <= reviewed_at_to)
-    if submitted_at_from:
-        sum_cols = sum_cols.where(Review.created_at >= submitted_at_from)
-    if submitted_at_to:
-        sum_cols = sum_cols.where(Review.created_at <= submitted_at_to)
-
-    sb = sum_cols.subquery("sb")
-
-    sum_rows = (await db.execute(
-        select(sb.c.state, func.count().label("cnt"))
-        .where(sb.c.rn == 1)             
-        .group_by(sb.c.state)
-    )).all()
-    sum_map = {row.state: int(row.cnt) for row in sum_rows}
-    summary = {
-        "pending":  sum_map.get("PENDING", 0),
-        "approved": sum_map.get("APPROVED", 0),
-        "rejected": sum_map.get("REJECTED", 0),
-        "total":    sum(sum_map.values()),
-    }
-
-    if not review_ids:
-        return {
-            "data": [],
-            "summary": summary,
-            "pagination": {
-                "page": page,
-                "page_size": page_size,
-                "total": 0,
-                "total_pages": 0,
-            },
-        }
-
-    reviews = (await db.execute(select(Review).where(Review.id.in_(review_ids)))).scalars().all()
-    id_pos = {rid: i for i, rid in enumerate(review_ids)}
-    reviews.sort(key=lambda rv: id_pos[rv.id])
-
-    item_ids = {rv.item_id for rv in reviews}
-    items_rows = await db.execute(
-        select(
-            Item.id, Item.station, Item.line_id, Item.product_code, Item.roll_number, Item.roll_id,
-            Item.bundle_number, Item.job_order_number, Item.roll_width, Item.detected_at,
-            Item.item_status_id, Item.ai_note
-        ).where(Item.id.in_(item_ids))
-    )
-    items = {r.id: r for r in items_rows.all()}
-
-    status_ids = {getattr(items[iid], "item_status_id") for iid in item_ids if iid in items}
-    status_rows = await db.execute(
-        select(ItemStatus.id, ItemStatus.code, ItemStatus.name_th, ItemStatus.display_order)
-        .where(ItemStatus.id.in_(status_ids))
-    )
-    statuses = {r.id: r for r in status_rows.all()}
-
-    defects_rows = await db.execute(
-        select(
-            ItemDefect.item_id,
-            ItemDefect.id,
-            ItemDefect.defect_type_id,
-            DefectType.code,
-            DefectType.name_th,
-            ItemDefect.meta
-        )
-        .join(DefectType, DefectType.id == ItemDefect.defect_type_id)
-        .where(ItemDefect.item_id.in_(item_ids))
-    )
-    defects_by_item: dict[int, list[dict]] = {}
-    for row in defects_rows.all():
-        defects_by_item.setdefault(row.item_id, []).append({
-            "id": row.id,
-            "defect_type_id": row.defect_type_id,
-            "defect_type_code": row.code,
-            "defect_type_name": row.name_th,
-            "meta": row.meta,
-        })
-
-    data = []
-    for rv in reviews:
-        it = items.get(rv.item_id)
-        if not it:
-            continue
-        st = statuses.get(it.item_status_id)
-        number = it.roll_number or it.bundle_number
-        decision_note = getattr(rv, "review_note", None) or getattr(rv, "reject_reason", None)
-
-        data.append({
-            "id": rv.id,
-            "type": rv.review_type,
-            "state": rv.state,
-            "submitted_by": rv.submitted_by,
-            "submitted_at": getattr(rv, "created_at", None),
-            "submit_note": getattr(rv, "submit_note", None),
-            "reviewed_by": getattr(rv, "reviewed_by", None),
-            "reviewed_at": getattr(rv, "reviewed_at", None),
-            "decision_note": decision_note,
-            "item": {
-                "id": it.id,
-                "station": it.station,
-                "line_id": it.line_id,
-                "product_code": it.product_code,
-                "number": number,
-                "roll_id": it.roll_id,
-                "job_order_number": it.job_order_number,
-                "roll_width": it.roll_width,
-                "detected_at": it.detected_at,
-                "ai_note": it.ai_note,
-                "status": {
-                    "id": it.item_status_id,
-                    "code": getattr(st, "code", None),
-                    "name": getattr(st, "name", None),
-                    "display_order": getattr(st, "display_order", None),
-                },
-            },
-            "defects": defects_by_item.get(it.id, []),
-        })
-
-    return {
-        "data": data,
-        "summary": summary,
-        "pagination": {
-            "page": page,
-            "page_size": page_size,
-            "total": total or 0,
-            "total_pages": ((total or 0) + page_size - 1) // page_size,
-        },
-    }
 @router.get("/{review_id}")
 async def get_review_by_id(
     review_id: int,
