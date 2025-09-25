@@ -146,10 +146,6 @@ class Item(Base):
     item_status_id: Mapped[int] = mapped_column(ForeignKey("qc.item_statuses.id"), nullable=False)
     ai_note: Mapped[Optional[str]] = mapped_column(Text)
 
-    scrap_requires_qc: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    scrap_confirmed_by: Mapped[Optional[int]] = mapped_column(ForeignKey('user.users.id'))
-    scrap_confirmed_at: Mapped[Optional[str]] = mapped_column(DateTime(timezone=True))
-
     current_review_id: Mapped[Optional[int]] = mapped_column(BIGINT)
 
     created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
