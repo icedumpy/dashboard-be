@@ -84,6 +84,7 @@ async def list_items(
         detected_to=detected_to,
     )
     
+    
 @router.get("/{item_id}")
 async def get_item_detail(
     item_id: int,

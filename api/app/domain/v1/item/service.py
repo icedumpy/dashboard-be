@@ -312,11 +312,16 @@ class ItemService:
         roll_width_min: Optional[float],
         roll_width_max: Optional[float],
         roll_id: Optional[str],
-        status: Optional[List[EItemStatusCode]],
+        status: Optional[List[EItemStatusCode]],        # list of enum codes
         detected_from: Optional[datetime],
         detected_to: Optional[datetime],
         user_role: str,
     ):
+        """
+        Build the base SELECT with lightweight filters. Avoids unnecessary joins so the
+        planner can leverage (item_status_id, detected_at) and (line_id, station, detected_at).
+        Heavy projections (lateral fallback, per-row counts) should be applied AFTER pagination.
+        """
         q = (
             select(
                 Item.id,
@@ -333,9 +338,11 @@ class ItemService:
                 Item.acknowledged_at,
                 Item.current_review_id,
 
+                # Join ItemStatus only to SELECT readable fields — not for filtering.
                 ItemStatus.code.label("status_code"),
                 ItemStatus.display_order.label("status_display_order"),
 
+                # Keep these scalar subqueries if you need them here (but ideally move after pagination)
                 select(func.count())
                     .select_from(ItemImage)
                     .where(ItemImage.item_id == Item.id)
@@ -350,28 +357,36 @@ class ItemService:
                     .label("defects_array"),
 
                 exists(
-                    select(1)
-                    .where(and_(Review.id == Item.current_review_id, Review.state == "PENDING"))
+                    select(1).where(and_(
+                        Review.id == Item.current_review_id,
+                        Review.state == "PENDING",
+                    ))
                 ).label("is_pending_review"),
 
                 exists(
-                    select(1)
-                    .where(and_(StatusChangeRequest.item_id == Item.id, StatusChangeRequest.state == "PENDING"))
+                    select(1).where(and_(
+                        StatusChangeRequest.item_id == Item.id,
+                        StatusChangeRequest.state == "PENDING",
+                    ))
                 ).label("is_changing_status_pending"),
             )
             .select_from(Item)
-            .join(ItemStatus, Item.item_status_id == ItemStatus.id)
+            .join(ItemStatus, Item.item_status_id == ItemStatus.id)   # select-friendly join
             .where(Item.deleted_at.is_(None))
         )
 
-        if line_id:
-            q = q.join(ProductionLine, Item.line_id == ProductionLine.id).where(ProductionLine.id == line_id)
-        if station:
+        # Simple, sargable filters
+        if line_id is not None:
+            q = q.where(Item.line_id == line_id)       # no join to ProductionLine
+        if station is not None:
             q = q.where(Item.station == station)
         if product_code:
             q = q.where(Item.product_code.ilike(f"%{product_code}%"))
         if number:
-            q = q.where((Item.roll_number.ilike(f"%{number}%")) | (Item.bundle_number.ilike(f"%{number}%")))
+            q = q.where(
+                (Item.roll_number.ilike(f"%{number}%")) |
+                (Item.bundle_number.ilike(f"%{number}%"))
+            )
         if roll_id:
             q = q.where(Item.roll_id.ilike(f"%{roll_id}%"))
         if job_order_number:
@@ -380,8 +395,11 @@ class ItemService:
             q = q.where(Item.roll_width >= roll_width_min)
         if roll_width_max is not None:
             q = q.where(Item.roll_width <= roll_width_max)
+
         if status:
-            q = q.where(ItemStatus.code.in_([s.value for s in status]))
+            codes = [s.value if hasattr(s, "value") else str(s) for s in status]
+            status_ids_subq = select(ItemStatus.id).where(ItemStatus.code.in_(codes))
+            q = q.where(Item.item_status_id.in_(status_ids_subq))
 
         if detected_from:
             q = q.where(Item.detected_at >= detected_from)
