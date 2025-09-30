@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db.repo.models import Item, ItemStatus, ItemDefect, DefectType
 from app.utils.helper.helper import TZ
 
-COMPLETED_STATUS_CODES = {"NORMAL", "QC_PASSED", "SCRAP", "DEFECT"}
+COMPLETED_STATUS_CODES = {"QC_PASSED", "REJECTED"}
 PENDING_STATUS_CODES   = {"PENDING"}
 STATUS_ORDER = ["NORMAL", "QC_PASSED", "DEFECT", "SCRAP", "REJECTED"]
 
