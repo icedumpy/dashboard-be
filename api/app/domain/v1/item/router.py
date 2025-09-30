@@ -347,6 +347,7 @@ async def get_csv_item_report(
         Item.station,
         Item.line_id,
         Item.product_code,
+        Item.roll_id,
         Item.roll_number,
         Item.bundle_number,
         Item.job_order_number,
@@ -438,6 +439,7 @@ async def get_csv_item_report(
             base_sq.c.station,
             base_sq.c.line_id,
             base_sq.c.product_code,
+            base_sq.c.roll_id,
             base_sq.c.roll_number,
             base_sq.c.bundle_number,
             base_sq.c.job_order_number,
@@ -454,11 +456,11 @@ async def get_csv_item_report(
         .order_by(base_sq.c.detected_at.desc(), base_sq.c.item_id.desc())
     )
 
-    # ---------- CSV ----------
     header = [
         "PRODUCT CODE",
         "ROLL NUMBER" if body.station == EStation.ROLL else "BUNDLE NUMBER",
         "JOB ORDER NUMBER",
+        "ROLL ID",
         "ROLL WIDTH",
         "TIMESTAMP",
         "STATUS",
@@ -468,6 +470,7 @@ async def get_csv_item_report(
         product_code_val = m.get("product_code")
         job_order_val = m.get("job_order_number")
         width_val = m.get("roll_width")
+        roll_id = m.get("roll_id")
         if body.station == EStation.BUNDLE:
             product_code_val = product_code_val or m.get("r_product_code")
             job_order_val = job_order_val or m.get("r_job_order_number")
@@ -476,9 +479,9 @@ async def get_csv_item_report(
         num_val = m.get("roll_number") if body.station == EStation.ROLL else m.get("bundle_number")
         status_str = status_label(m.get("status_code"), m.get("defects_csv"), None)
         dt = m.get("detected_at")
-        ts = dt.isoformat(timespec="seconds") if dt else ""
+        readable_ts = dt.strftime("%d/%m/%Y %H:%M:%S") if dt else ""
         width_out = "" if width_val is None else str(width_val)
-        return [product_code_val or "", num_val or "", job_order_val or "", width_out, ts, status_str]
+        return [product_code_val or "", num_val or "", job_order_val or "", roll_id, width_out, readable_ts, status_str]
 
     async def acsv_iter():
         buf = StringIO()
