@@ -179,6 +179,8 @@ class ItemService:
                 }
                 for u in users
             }
+        
+        is_pending_review = any(getattr(r, "state", None) == "PENDING" for r in rws)
 
         return {
             "data": {
@@ -192,6 +194,7 @@ class ItemService:
                 "job_order_number": it.job_order_number,
                 "roll_width": float(it.roll_width) if it.roll_width is not None else None,
                 "detected_at": it.detected_at.isoformat(),
+                "is_pending_review": is_pending_review,
                 "status_code": st,
                 "ai_note": it.ai_note,
                 "acknowledged_by": it.acknowledged_by,
