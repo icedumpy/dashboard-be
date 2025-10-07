@@ -29,7 +29,7 @@ class ChangeStatusService:
         sort_by: Optional["StatusChangeSortField"],
         order_by: Optional["EOrderBy"],
     ) -> "ListResponseOut":
-        where_clauses = [StatusChangeRequest.state == "PENDING"]
+        where_clauses = [StatusChangeRequest.state == "PENDING", StatusChangeRequest.deleted_at.is_(None)]
         if line_id is not None:
             where_clauses.append(Item.line_id == line_id)
         if station is not None:
