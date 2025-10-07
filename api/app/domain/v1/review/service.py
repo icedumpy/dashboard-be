@@ -53,6 +53,7 @@ class ReviewService:
             q = q.where(Review.created_at >= submitted_at_from)
         if submitted_at_to:
             q = q.where(Review.created_at <= submitted_at_to)
+        q = q.where(Review.deleted_at.is_(None))
         return q
 
     async def list_reviews(

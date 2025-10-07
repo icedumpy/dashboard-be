@@ -1,7 +1,6 @@
 # app/domain/v1/items_router.py
 from fastapi import APIRouter, Query, Depends, HTTPException, Request
 from typing import Optional, Annotated, List
-from decimal import Decimal, ROUND_HALF_UP
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_, and_, literal, text
 from sqlalchemy.orm import aliased
@@ -142,7 +141,10 @@ async def get_item_history(
         .outerjoin(FromS, FromS.id == ItemEvent.from_status_id)
         .outerjoin(ToS, ToS.id == ItemEvent.to_status_id)
         .outerjoin(User, User.id == ItemEvent.actor_id) 
-        .where(ItemEvent.item_id == item_id)
+        .where(
+            ItemEvent.item_id == item_id,
+            ItemEvent.deleted_at.is_(None),
+        )
         .order_by(ItemEvent.created_at.desc(), ItemEvent.id.desc())
     )
 

@@ -262,6 +262,7 @@ class Review(Base):
 
     created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    deleted_at: Mapped[str] = mapped_column(DateTime(timezone=True))
 
     item: Mapped["Item"] = relationship(back_populates="reviews")
 
@@ -313,6 +314,7 @@ class ItemEvent(Base):
     to_status_id: Mapped[Optional[int]] = mapped_column(ForeignKey("qc.item_statuses.id"))
     details: Mapped[Optional[dict]] = mapped_column(JSONB)
     created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    deleted_at: Mapped[str] = mapped_column(DateTime(timezone=True))
 
     item: Mapped["Item"] = relationship(back_populates="events")
 
@@ -343,6 +345,7 @@ class StatusChangeRequest(Base):
 
     approved_by: Mapped[Optional[int]] = mapped_column(ForeignKey("user.users.id"))
     approved_at: Mapped[Optional[str]] = mapped_column(DateTime(timezone=True))
+    deleted_at: Mapped[str] = mapped_column(DateTime(timezone=True))
 
     reason: Mapped[Optional[str]] = mapped_column(Text)
     meta: Mapped[Optional[Dict]] = mapped_column(JSONB)
