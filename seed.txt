@@ -53,7 +53,7 @@ WITH line AS (SELECT id FROM qc.production_lines WHERE code='3'),
 ins AS (
   INSERT INTO qc.items
     (station,line_id,product_code,roll_number,job_order_number,roll_width,detected_at,
-      item_status_id,ai_note,scrap_confirmed_by,scrap_confirmed_at)
+      item_status_id,ai_note,acknowledged_by,acknowledged_at)
   SELECT 'ROLL', 2, '13W10C2MB','250723017E16','3D3G256045',270, now()-interval '3 hour',
           (SELECT id FROM qc.item_statuses WHERE code='SCRAP'),
           'Scrap (ไม่พบฉลาก)',
