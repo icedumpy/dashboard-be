@@ -43,6 +43,7 @@ class EItemStatusCode(str, Enum):
     RECHECK = "RECHECK"
     NORMAL = "NORMAL"
     QC_PASSED = "QC_PASSED"
+    LEFTOVER_ROLL = "LEFTOVER_ROLL"
 
 class EOrderBy(str, Enum):
     ASC = "asc"
