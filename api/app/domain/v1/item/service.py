@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import BinaryExpression
 from sqlalchemy.orm import aliased
-from sqlalchemy import select, update, delete, insert, or_, func, case, and_, asc, desc, exists, literal, literal_column, true
+from sqlalchemy import select, update, delete, insert, or_, func, case, and_, asc, desc, exists, literal, literal_column, true, not_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.v1.item.schema import FixRequestBody, ItemEditIn, ItemAckOut
@@ -325,6 +325,30 @@ class ItemService:
         planner can leverage (item_status_id, detected_at) and (line_id, station, detected_at).
         Heavy projections (lateral fallback, per-row counts) should be applied AFTER pagination.
         """
+        review_pending_exists = exists(
+            select(1)
+            .select_from(Review)
+            .where(
+                and_(
+                    Review.id == Item.current_review_id,
+                    Review.state == "PENDING",
+                    Review.deleted_at.is_(None),
+                )
+            )
+        )
+
+        scr_pending_exists = exists(
+            select(1)
+            .select_from(StatusChangeRequest)
+            .where(
+                and_(
+                    StatusChangeRequest.item_id == Item.id,
+                    StatusChangeRequest.state == "PENDING",
+                    StatusChangeRequest.deleted_at.is_(None),
+                )
+            )
+        )
+
         q = (
             select(
                 Item.id,
@@ -341,12 +365,10 @@ class ItemService:
                 Item.acknowledged_at,
                 Item.current_review_id,
 
-                # Join ItemStatus only to SELECT readable fields — not for filtering.
                 ItemStatus.code.label("status_code"),
                 ItemStatus.name_th.label("status_name_th"),
                 ItemStatus.display_order.label("status_display_order"),
 
-                # Keep these scalar subqueries if you need them here (but ideally move after pagination)
                 select(func.count())
                     .select_from(ItemImage)
                     .where(ItemImage.item_id == Item.id)
@@ -360,23 +382,16 @@ class ItemService:
                     .scalar_subquery()
                     .label("defects_array"),
 
-                exists(
-                    select(1).where(and_(
-                        Review.id == Item.current_review_id,
-                        Review.state == "PENDING",
-                    ))
-                ).label("is_pending_review"),
-
-                exists(
-                    select(1).where(and_(
-                        StatusChangeRequest.item_id == Item.id,
-                        StatusChangeRequest.state == "PENDING",
-                    ))
-                ).label("is_changing_status_pending"),
+                review_pending_exists.label("is_pending_review"),
+                scr_pending_exists.label("is_changing_status"), 
             )
             .select_from(Item)
-            .join(ItemStatus, Item.item_status_id == ItemStatus.id)   # select-friendly join
-            .where(Item.deleted_at.is_(None))
+            .join(ItemStatus, Item.item_status_id == ItemStatus.id)
+            .where(
+                Item.deleted_at.is_(None),
+                not_(review_pending_exists),   
+                not_(scr_pending_exists),      
+            )
         )
 
         # Simple, sargable filters
