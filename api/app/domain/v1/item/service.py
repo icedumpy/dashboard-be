@@ -343,6 +343,7 @@ class ItemService:
 
                 # Join ItemStatus only to SELECT readable fields — not for filtering.
                 ItemStatus.code.label("status_code"),
+                ItemStatus.name_th.label("status_name_th"),
                 ItemStatus.display_order.label("status_display_order"),
 
                 # Keep these scalar subqueries if you need them here (but ideally move after pagination)
@@ -468,6 +469,7 @@ class ItemService:
             "roll_id": r.roll_id,
             "detected_at": r.detected_at.isoformat(),
             "status_code": r.status_code,
+            "status_name_th": r.status_name_th,
             "acknowledged_by": r.acknowledged_by,
             "acknowledged_at": r.acknowledged_at.isoformat() if r.acknowledged_at else None,
             "current_review_id": r.current_review_id,
