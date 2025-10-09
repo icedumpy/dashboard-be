@@ -48,6 +48,7 @@ class ItemEventOut(BaseModel):
     from_status_code: Optional[str] = None
     to_status_id: Optional[int] = None
     to_status_code: Optional[str] = None
+    before_defects: List[str]
     defects: List[str]
     created_at: str
 
