@@ -36,9 +36,9 @@ def require_role(user: User, allowed: List[Role]) -> None:
     if user.role not in allowed:
         raise HTTPException(status_code=403, detail="Forbidden")
 
-def require_same_line(user: User, item: Item):
-    if user.line_id != item.line_id:
-        raise HTTPException(status_code=403, detail="Cross-line operation not allowed")
+# def require_same_line(user: User, item: Item):
+#     if user.line_id != item.line_id:
+#         raise HTTPException(status_code=403, detail="Cross-line operation not allowed")
 
 
 def safe_fs_path(relpath: str) -> Path:
