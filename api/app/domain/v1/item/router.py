@@ -22,9 +22,7 @@ from app.domain.v1.item.schema import FixRequestBody, ItemEditIn, ItemEditOut, I
 from app.domain.v1.item.service import ItemService
 from app.domain.v1.item.service import status_label, norm
 from app.utils.helper.helper import (
-    require_role,
-    require_same_line,
-    TZ
+    require_role
 )
 from fastapi.responses import StreamingResponse
 import csv
@@ -199,7 +197,6 @@ async def submit_fix_request(
     it = await db.get(Item, item_id)
     if not it or it.deleted_at:
         raise HTTPException(status_code=404, detail="Item not found")
-    require_same_line(user, it)
 
     is_pening_review = False
 
