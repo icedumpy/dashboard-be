@@ -147,20 +147,36 @@ async def get_item_history(
     )
 
     rows = (await db.execute(q)).all()
-    
-    rows = (await db.execute(q)).all()
+
+    after_ids: set[int] = set()
+    before_ids: set[int] = set()
+    for r in rows:
+        details = (getattr(r, "details", None) or {})  # ensure dict
+        if "DEFECT" in (r.from_status_code, r.to_status_code):
+            after_ids.update(details.get("defect_type_ids") or [])
+            before_ids.update(details.get("before_defect_type_ids") or [])
+
+    id_to_name: dict[int, str] = {}
+    all_ids = after_ids | before_ids
+    if all_ids:
+        res = await db.execute(
+            select(DefectType.id, DefectType.name_th).where(DefectType.id.in_(all_ids))
+        )
+        id_to_name = {id_: name for id_, name in res.all()}
 
     data: list[ItemEventOut] = []
     for r in rows:
-        defects: list[str] = []
+        details = (getattr(r, "details", None) or {})
+        show_defects = "DEFECT" in (r.from_status_code, r.to_status_code)
 
-        if r.from_status_code == "DEFECT" or r.to_status_code == "DEFECT":
-            result = await db.execute(
-                select(DefectType.name_th)
-                .join(ItemDefect, DefectType.id == ItemDefect.defect_type_id)
-                .where(ItemDefect.item_id == item_id)
-            )
-            defects = result.unique().scalars().all()
+        after_defect_ids = details.get("defect_type_ids") or []
+        before_defect_ids = details.get("before_defect_type_ids") or []
+
+        defects = [id_to_name.get(i) for i in after_defect_ids] if show_defects else []
+        before_defects = [id_to_name.get(i) for i in before_defect_ids] if show_defects else []
+
+        defects = [d for d in defects if d]
+        before_defects = [d for d in before_defects if d]
 
         v = ItemEventOut(
             id=r.id,
@@ -174,6 +190,7 @@ async def get_item_history(
                 if hasattr(r.created_at, "isoformat")
                 else str(r.created_at)
             ),
+            before_defects=before_defects,
             defects=defects,
             actor=ActorOut(
                 id=r.user_id,

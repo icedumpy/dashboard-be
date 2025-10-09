@@ -106,6 +106,14 @@ async def create_status_change_request(
                 rows = [{"request_id": req.id, "defect_type_id": dtid} for dtid in uniq]
                 await db.execute(insert(StatusChangeRequestDefect).values(rows))
 
+        before_defect_type_ids: list[int] = (
+            await db.execute(
+                select(ItemDefect.defect_type_id)
+                .where(ItemDefect.item_id == item.id)
+                .order_by(ItemDefect.defect_type_id)
+            )
+        ).scalars().all()
+
         if going_to_defect or going_to_leftover_roll:
             defect_ids_applied: list[int] = []
             if going_to_defect:
@@ -117,7 +125,6 @@ async def create_status_change_request(
                         else "defect_type_ids is required when setting status to DEFECT",
                     )
                 defect_ids_applied = await _validate_defect_type_ids(db, body.defect_type_ids)
-
             await db.execute(
                 update(Item)
                 .where(Item.id == item.id)
@@ -150,6 +157,7 @@ async def create_status_change_request(
                         "source": "AUTO_APPROVE",
                         "reason": body.reason,
                         "meta": body.meta,
+                        "before_defect_type_ids": before_defect_type_ids,
                         "defect_type_ids": defect_ids_applied if going_to_defect else [],
                     },
                 )
