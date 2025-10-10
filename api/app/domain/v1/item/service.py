@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.v1.item.schema import FixRequestBody, ItemEditIn, ItemAckOut
 from app.utils.helper.helper import current_shift_window, TZ
 from app.utils.helper.paginate import paginate
-from app.core.db.repo.models import EStation, EItemStatusCode, DefectType, User, ItemSortField, EOrderBy
+from app.core.db.repo.models import EStation, EItemStatusCode, DefectType, User, ItemSortField, EOrderBy, ItemEvent
 from app.core.db.repo.models import Item, ItemStatus, Review, ItemDefect, ItemImage, StatusChangeRequest, ProductionLine, ReviewStateEnum
 
 
@@ -348,6 +348,17 @@ class ItemService:
                 )
             )
         )
+        
+        item_history_exists = exists(
+            select(1)
+            .select_from(ItemEvent)
+            .where(
+                and_(
+                    ItemEvent.item_id == Item.id,
+                    ItemEvent.deleted_at.is_(None),
+                )
+            )
+        )
 
         q = (
             select(
@@ -384,6 +395,7 @@ class ItemService:
 
                 review_pending_exists.label("is_pending_review"),
                 scr_pending_exists.label("is_changing_status_pending"), 
+                item_history_exists.label("is_item_history_exists"), 
             )
             .select_from(Item)
             .join(ItemStatus, Item.item_status_id == ItemStatus.id)
@@ -490,6 +502,7 @@ class ItemService:
             "current_review_id": r.current_review_id,
             "is_pending_review": bool(r.is_pending_review),
             "is_changing_status_pending": bool(r.is_changing_status_pending),
+            "is_item_history_exists": bool(r.is_item_history_exists),
             "images": int(r.images_count or 0),
             "defects": list(r.defects_array or []),
         }
