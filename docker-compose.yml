@@ -30,7 +30,7 @@ services:
       "
 
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/api/v1/health || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import os,urllib.request,sys; url='http://127.0.0.1:8000'+os.getenv('HEALTHCHECK_PATH','/api/v1/health'); urllib.request.urlopen(url, timeout=3); sys.exit(0)\""]
       interval: 10s
       timeout: 3s
       retries: 10
