@@ -1,22 +1,50 @@
+version: "3.9"
+
 services:
   api:
     build:
       context: ./api
       dockerfile: Dockerfile
     container_name: qc_api
+
     env_file:
       - .env
+    environment:
+      PYTHONUNBUFFERED: "1"
+      UVICORN_WORKERS: "${UVICORN_WORKERS:-1}"
+      UVICORN_LOG_LEVEL: "${UVICORN_LOG_LEVEL:-info}"
+
     ports:
-      - "${APP_PORT}:8000"
+      - "${APP_PORT:-8000}:8000"
+
     volumes:
-      - ./api:/app
-    command:
-      [
-        "bash","-lc",
-        "alembic -c /app/alembic.ini upgrade head && \
-        uvicorn app.main:app --host 0.0.0.0 --port 8000"
-      ]
+      - ./api:/app:rw,delegated
+
+    command: >
+      bash -lc "
+        set -euo pipefail
+        alembic -c /app/alembic.ini upgrade head &&
+        exec uvicorn app.main:app --host 0.0.0.0 --port 8000
+          --workers ${UVICORN_WORKERS}
+          --log-level ${UVICORN_LOG_LEVEL}
+      "
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/api/v1/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+
     restart: on-failure
+    stop_grace_period: 30s
+    init: true
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
 volumes:
   fitesa_db_data:
