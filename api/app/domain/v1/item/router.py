@@ -110,7 +110,7 @@ async def get_item_history(
     item_id: int,
     svc: ItemService = Depends(get_service),
 ):
-    return await svc.get_item_history(item_id)
+    return svc.get_item_history(item_id)
 
 @router.post("/{item_id}/fix-request")
 async def submit_fix_request(
@@ -120,7 +120,7 @@ async def submit_fix_request(
     svc: ItemService = Depends(get_service),
 ):
     require_role(user, ["OPERATOR"])
-    return await svc.submit_fix_request(item_id, body, user)
+    return await svc.submit_fix_request(item_id, body)
 
 @router.get("/{item_id}/images")
 async def list_item_images(

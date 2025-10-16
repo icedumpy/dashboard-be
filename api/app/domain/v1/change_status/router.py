@@ -39,9 +39,13 @@ async def create_status_change_request(
     db: AsyncSession = Depends(get_db),
     user = Depends(get_current_user),
 ):
-    require_role(user, ["OPERATOR", "INSPECTOR"])
-    roles = user.role
-    is_qc = "INSPECTOR" in roles
+    require_role(user, ["OPERATOR"])
+    
+    
+    # [NORMAL, SCRAP, DEFECT, LEFT]
+    # Normal, Scrap -> Defct ( NO QC )
+    # Defect -> Normal, Scrap ( REQUIRE QC )
+    # Defect -> LeftOverRoll, Defect ( NO QC )
 
     try:
         item_q = (
@@ -82,7 +86,8 @@ async def create_status_change_request(
         current_code = getattr(item.status, "code", None)
         target_code = tgt.code
         going_to_defect = (target_code == "DEFECT")
-        is_normal_like = current_code in ("NORMAL", "QC_PASSED")
+        going_to_leftover_roll = (target_code == "LEFTOVER_ROLL")
+        is_normal_like = current_code in ("NORMAL", "LEFTOVER_ROLL")
 
         req = StatusChangeRequest(
             item_id=body.item_id,
@@ -101,7 +106,15 @@ async def create_status_change_request(
                 rows = [{"request_id": req.id, "defect_type_id": dtid} for dtid in uniq]
                 await db.execute(insert(StatusChangeRequestDefect).values(rows))
 
-        if is_qc or going_to_defect:
+        before_defect_type_ids: list[int] = (
+            await db.execute(
+                select(ItemDefect.defect_type_id)
+                .where(ItemDefect.item_id == item.id)
+                .order_by(ItemDefect.defect_type_id)
+            )
+        ).scalars().all()
+
+        if going_to_defect or going_to_leftover_roll:
             defect_ids_applied: list[int] = []
             if going_to_defect:
                 if not body.defect_type_ids:
@@ -112,7 +125,6 @@ async def create_status_change_request(
                         else "defect_type_ids is required when setting status to DEFECT",
                     )
                 defect_ids_applied = await _validate_defect_type_ids(db, body.defect_type_ids)
-
             await db.execute(
                 update(Item)
                 .where(Item.id == item.id)
@@ -133,23 +145,23 @@ async def create_status_change_request(
                 .where(StatusChangeRequest.id == req.id)
                 .values(state="APPROVED", approved_by=user.id, approved_at=func.now())
             )
-
-            if is_qc:
-                db.add(
-                    ItemEvent(
-                        item_id=item.id,
-                        actor_id=user.id,
-                        event_type="STATUS_CHANGED" if is_qc else "CHNAGE_STATUS_REQUESTED",
-                        from_status_id=from_status_id,
-                        to_status_id=body.to_status_id,
-                        details={
-                            "source": "QC_AUTO_APPROVE",
-                            "reason": body.reason,
-                            "meta": body.meta,
-                            "defect_type_ids": defect_ids_applied if going_to_defect else [],
-                        },
-                    )
+            
+            db.add(
+                ItemEvent(
+                    item_id=item.id,
+                    actor_id=user.id,
+                    event_type="STATUS_CHANGED",
+                    from_status_id=from_status_id,
+                    to_status_id=body.to_status_id,
+                    details={
+                        "source": "AUTO_APPROVE",
+                        "reason": body.reason,
+                        "meta": body.meta,
+                        "before_defect_type_ids": before_defect_type_ids,
+                        "defect_type_ids": defect_ids_applied if going_to_defect else [],
+                    },
                 )
+            )
 
         await db.commit()
 

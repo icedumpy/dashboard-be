@@ -72,6 +72,7 @@ async def jwt_bypass_wrapper(request: Request, call_next):
         or path == OPENAPI_PATH
         or path.startswith(f"{IMAGES_PREFIX}/")
         or path.startswith(AUTH_PREFIX)        
+        or path.startswith("/api/v1/health")        
     ):
         return await call_next(request)
 

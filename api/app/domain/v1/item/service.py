@@ -14,7 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import BinaryExpression
 from sqlalchemy.orm import aliased
-from sqlalchemy import select, or_, text, func, case, and_, asc, desc, exists, literal, literal_column, true
+from sqlalchemy import select, update, delete, insert, or_, func, case, and_, asc, desc, exists, literal, literal_column, true, not_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config.config import settings
@@ -330,20 +330,36 @@ class ItemService:
         )
 
         rows = (await self.db.execute(q)).all()
-        
-        rows = (await self.db.execute(q)).all()
+
+        after_ids: set[int] = set()
+        before_ids: set[int] = set()
+        for r in rows:
+            details = (getattr(r, "details", None) or {})  # ensure dict
+            if "DEFECT" in (r.from_status_code, r.to_status_code):
+                after_ids.update(details.get("defect_type_ids") or [])
+                before_ids.update(details.get("before_defect_type_ids") or [])
+
+        id_to_name: dict[int, str] = {}
+        all_ids = after_ids | before_ids
+        if all_ids:
+            res = await db.execute(
+                select(DefectType.id, DefectType.name_th).where(DefectType.id.in_(all_ids))
+            )
+            id_to_name = {id_: name for id_, name in res.all()}
 
         data: list[ItemEventOut] = []
         for r in rows:
-            defects: list[str] = []
+            details = (getattr(r, "details", None) or {})
+            show_defects = "DEFECT" in (r.from_status_code, r.to_status_code)
 
-            if r.from_status_code == "DEFECT" or r.to_status_code == "DEFECT":
-                result = await self.db.execute(
-                    select(DefectType.name_th)
-                    .join(ItemDefect, DefectType.id == ItemDefect.defect_type_id)
-                    .where(ItemDefect.item_id == item_id)
-                )
-                defects = result.unique().scalars().all()
+            after_defect_ids = details.get("defect_type_ids") or []
+            before_defect_ids = details.get("before_defect_type_ids") or []
+
+            defects = [id_to_name.get(i) for i in after_defect_ids] if show_defects else []
+            before_defects = [id_to_name.get(i) for i in before_defect_ids] if show_defects else []
+
+            defects = [d for d in defects if d]
+            before_defects = [d for d in before_defects if d]
 
             v = ItemEventOut(
                 id=r.id,
@@ -357,6 +373,7 @@ class ItemService:
                     if hasattr(r.created_at, "isoformat")
                     else str(r.created_at)
                 ),
+                before_defects=before_defects,
                 defects=defects,
                 actor=ActorOut(
                     id=r.user_id,
@@ -372,7 +389,6 @@ class ItemService:
         it = await self.db.get(Item, item_id)
         if not it or it.deleted_at:
             raise HTTPException(status_code=404, detail="Item not found")
-        require_same_line(user, it)
 
         is_pening_review = False
 
@@ -438,7 +454,7 @@ class ItemService:
         self.db.add(rv)
         await self.db.flush()
 
-        upd = await self.b.execute(
+        upd = await self.db.execute(
             text(
                 """
                 UPDATE qc.item_images
@@ -703,16 +719,46 @@ class ItemService:
         roll_width_min: Optional[float],
         roll_width_max: Optional[float],
         roll_id: Optional[str],
-        status: Optional[List[EItemStatusCode]],        # list of enum codes
+        status: Optional[List[EItemStatusCode]],
         detected_from: Optional[datetime],
         detected_to: Optional[datetime],
         user_role: str,
     ):
-        """
-        Build the base SELECT with lightweight filters. Avoids unnecessary joins so the
-        planner can leverage (item_status_id, detected_at) and (line_id, station, detected_at).
-        Heavy projections (lateral fallback, per-row counts) should be applied AFTER pagination.
-        """
+        review_pending_exists = exists(
+            select(1)
+            .select_from(Review)
+            .where(
+                and_(
+                    Review.id == Item.current_review_id,
+                    Review.state == "PENDING",
+                    Review.deleted_at.is_(None),
+                )
+            )
+        )
+
+        scr_pending_exists = exists(
+            select(1)
+            .select_from(StatusChangeRequest)
+            .where(
+                and_(
+                    StatusChangeRequest.item_id == Item.id,
+                    StatusChangeRequest.state == "PENDING",
+                    StatusChangeRequest.deleted_at.is_(None),
+                )
+            )
+        )
+        
+        item_history_exists = exists(
+            select(1)
+            .select_from(ItemEvent)
+            .where(
+                and_(
+                    ItemEvent.item_id == Item.id,
+                    ItemEvent.deleted_at.is_(None),
+                )
+            )
+        )
+
         q = (
             select(
                 Item.id,
@@ -729,11 +775,10 @@ class ItemService:
                 Item.acknowledged_at,
                 Item.current_review_id,
 
-                # Join ItemStatus only to SELECT readable fields — not for filtering.
                 ItemStatus.code.label("status_code"),
+                ItemStatus.name_th.label("status_name_th"),
                 ItemStatus.display_order.label("status_display_order"),
 
-                # Keep these scalar subqueries if you need them here (but ideally move after pagination)
                 select(func.count())
                     .select_from(ItemImage)
                     .where(ItemImage.item_id == Item.id)
@@ -747,28 +792,21 @@ class ItemService:
                     .scalar_subquery()
                     .label("defects_array"),
 
-                exists(
-                    select(1).where(and_(
-                        Review.id == Item.current_review_id,
-                        Review.state == "PENDING",
-                    ))
-                ).label("is_pending_review"),
-
-                exists(
-                    select(1).where(and_(
-                        StatusChangeRequest.item_id == Item.id,
-                        StatusChangeRequest.state == "PENDING",
-                    ))
-                ).label("is_changing_status_pending"),
+                review_pending_exists.label("is_pending_review"),
+                scr_pending_exists.label("is_changing_status_pending"), 
+                item_history_exists.label("is_item_history_exists"), 
             )
             .select_from(Item)
-            .join(ItemStatus, Item.item_status_id == ItemStatus.id)   # select-friendly join
-            .where(Item.deleted_at.is_(None))
+            .join(ItemStatus, Item.item_status_id == ItemStatus.id)
+            .where(
+                Item.deleted_at.is_(None),
+                not_(review_pending_exists),   
+                not_(scr_pending_exists),      
+            )
         )
 
-        # Simple, sargable filters
         if line_id is not None:
-            q = q.where(Item.line_id == line_id)       # no join to ProductionLine
+            q = q.where(Item.line_id == line_id)
         if station is not None:
             q = q.where(Item.station == station)
         if product_code:
@@ -905,11 +943,13 @@ class ItemService:
             "roll_id": r.roll_id,
             "detected_at": r.detected_at.isoformat(),
             "status_code": r.status_code,
+            "status_name_th": r.status_name_th,
             "acknowledged_by": r.acknowledged_by,
             "acknowledged_at": r.acknowledged_at.isoformat() if r.acknowledged_at else None,
             "current_review_id": r.current_review_id,
             "is_pending_review": bool(r.is_pending_review),
             "is_changing_status_pending": bool(r.is_changing_status_pending),
+            "is_item_history_exists": bool(r.is_item_history_exists),
             "images": int(r.images_count or 0),
             "defects": list(r.defects_array or []),
         }

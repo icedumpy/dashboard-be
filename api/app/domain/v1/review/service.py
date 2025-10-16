@@ -2,7 +2,7 @@
 from __future__ import annotations
 from typing import Optional, Iterable, Sequence, Dict, Any, List, Tuple
 from datetime import datetime
-from sqlalchemy import select, func
+from sqlalchemy import select, func, exists, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db.repo.models import (
@@ -83,7 +83,7 @@ class ReviewService:
               Review.reviewed_by.label("r_reviewed_by"),
               Review.reviewed_at.label("r_reviewed_at"),
               Review.updated_at.label("r_updated_at"),
-              Review.created_at.label("r_submitted_at"), # submitted_at has to be removed
+              Review.created_at.label("r_submitted_at"),
               func.coalesce(Review.review_note, Review.reject_reason).label("r_decision"),
 
               Item.detected_at.label("i_detected_at"),
@@ -185,11 +185,23 @@ class ReviewService:
         reviews.sort(key=lambda rv: id_pos[rv.id])
 
         item_ids = {rv.item_id for rv in reviews}
+        
+        item_history_exists = exists(
+            select(1)
+            .select_from(ItemEvent)
+            .where(
+                and_(
+                    ItemEvent.item_id == Item.id,
+                    ItemEvent.deleted_at.is_(None),
+                )
+            )
+        )
+        
         items_rows = await self.db.execute(
             select(
                 Item.id, Item.station, Item.line_id, Item.product_code, Item.roll_number, Item.roll_id,
                 Item.bundle_number, Item.job_order_number, Item.roll_width, Item.detected_at,
-                Item.item_status_id, Item.ai_note
+                Item.item_status_id, Item.ai_note, item_history_exists.label("is_item_history_exists"), 
             ).where(Item.id.in_(item_ids))
         )
         items = {r.id: r for r in items_rows.all()}
@@ -253,6 +265,7 @@ class ReviewService:
                     "roll_width": it.roll_width,
                     "detected_at": it.detected_at,
                     "ai_note": it.ai_note,
+                    "is_item_history_exists": it.is_item_history_exists,
                     "status": {
                         "id": it.item_status_id,
                         "code": getattr(st, "code", None),
