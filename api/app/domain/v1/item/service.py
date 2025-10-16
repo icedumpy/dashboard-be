@@ -1,31 +1,35 @@
 
-from fastapi import APIRouter, HTTPException, status
-from typing import Optional, Sequence, Union, List, Dict, Any, Set, Iterable
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
+from typing import Optional, Sequence, Union, List
 from datetime import datetime, timedelta
 from pathlib import PurePosixPath
 from decimal import Decimal, ROUND_HALF_UP
+from io import StringIO
+import logging
+import csv
+import asyncio
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import BinaryExpression
 from sqlalchemy.orm import aliased
-from sqlalchemy import select, update, delete, insert, or_, func, case, and_, asc, desc, exists, literal, literal_column, true, not_
+from sqlalchemy import select, update, delete, insert, or_, func, case, and_, asc, desc, exists, literal, literal_column, true, not_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.v1.item.schema import FixRequestBody, ItemEditIn, ItemAckOut
-from app.utils.helper.helper import current_shift_window, TZ
+from app.core.config.config import settings
+from app.domain.v1.item.schema import FixRequestBody, ItemEditIn, ItemAckOut, ItemEventOut, ActorOut, ItemReportRequest
+from app.utils.helper.helper import current_shift_window, TZ, require_same_line
 from app.utils.helper.paginate import paginate
 from app.core.db.repo.models import EStation, EItemStatusCode, DefectType, User, ItemSortField, EOrderBy, ItemEvent
 from app.core.db.repo.models import Item, ItemStatus, Review, ItemDefect, ItemImage, StatusChangeRequest, ProductionLine, ReviewStateEnum
-
-
 
 router = APIRouter()
 
 StationT = Union[str, EStation]
 StatusListT = Optional[Sequence[Union[str, EItemStatusCode]]]
 
-
+log = logging.getLogger(__name__)
 
 def _as_float(v):
     return float(v) if v is not None else None
@@ -93,7 +97,7 @@ class ItemService:
         rows, total = await paginate(self.db, q, page, page_size)
         data = [self._serialize_row(r) for r in rows]
 
-        summary = await summarize_station(
+        summary = await self._summarize_station(
             self.db,
             line_id=line_id,
             station=station,
@@ -296,6 +300,406 @@ class ItemService:
             changed=True,
         )
 
+    async def get_item_history(self, item_id: int):
+        FromS = aliased(ItemStatus)
+        ToS = aliased(ItemStatus)
+
+        q = (
+            select(
+                ItemEvent.id,
+                ItemEvent.event_type,
+                ItemEvent.actor_id,
+                ItemEvent.details,
+                ItemEvent.from_status_id,
+                FromS.code.label("from_status_code"),
+                ItemEvent.to_status_id,
+                ToS.code.label("to_status_code"),
+                ItemEvent.created_at,
+                User.id.label("user_id"),
+                User.username,
+                User.display_name,
+            )
+            .outerjoin(FromS, FromS.id == ItemEvent.from_status_id)
+            .outerjoin(ToS, ToS.id == ItemEvent.to_status_id)
+            .outerjoin(User, User.id == ItemEvent.actor_id) 
+            .where(
+                ItemEvent.item_id == item_id,
+                ItemEvent.deleted_at.is_(None),
+            )
+            .order_by(ItemEvent.created_at.desc(), ItemEvent.id.desc())
+        )
+
+        rows = (await self.db.execute(q)).all()
+
+        after_ids: set[int] = set()
+        before_ids: set[int] = set()
+        for r in rows:
+            details = (getattr(r, "details", None) or {})  # ensure dict
+            if "DEFECT" in (r.from_status_code, r.to_status_code):
+                after_ids.update(details.get("defect_type_ids") or [])
+                before_ids.update(details.get("before_defect_type_ids") or [])
+
+        id_to_name: dict[int, str] = {}
+        all_ids = after_ids | before_ids
+        if all_ids:
+            res = await db.execute(
+                select(DefectType.id, DefectType.name_th).where(DefectType.id.in_(all_ids))
+            )
+            id_to_name = {id_: name for id_, name in res.all()}
+
+        data: list[ItemEventOut] = []
+        for r in rows:
+            details = (getattr(r, "details", None) or {})
+            show_defects = "DEFECT" in (r.from_status_code, r.to_status_code)
+
+            after_defect_ids = details.get("defect_type_ids") or []
+            before_defect_ids = details.get("before_defect_type_ids") or []
+
+            defects = [id_to_name.get(i) for i in after_defect_ids] if show_defects else []
+            before_defects = [id_to_name.get(i) for i in before_defect_ids] if show_defects else []
+
+            defects = [d for d in defects if d]
+            before_defects = [d for d in before_defects if d]
+
+            v = ItemEventOut(
+                id=r.id,
+                event_type=r.event_type,
+                from_status_id=r.from_status_id,
+                from_status_code=r.from_status_code,
+                to_status_id=r.to_status_id,
+                to_status_code=r.to_status_code,
+                created_at=(
+                    r.created_at.isoformat()
+                    if hasattr(r.created_at, "isoformat")
+                    else str(r.created_at)
+                ),
+                before_defects=before_defects,
+                defects=defects,
+                actor=ActorOut(
+                    id=r.user_id,
+                    username=r.username,
+                    display_name=r.display_name,
+                ),
+            )
+            data.append(v)
+
+        return data
+
+    async def submit_fix_request(self, item_id: int, body: FixRequestBody, user: User):
+        it = await self.db.get(Item, item_id)
+        if not it or it.deleted_at:
+            raise HTTPException(status_code=404, detail="Item not found")
+
+        is_pening_review = False
+
+        if it.current_review_id != None:
+            review_data = (await self.db.execute(select(Review).where(Review.id == it.current_review_id))).scalar()
+            is_pening_review = review_data.state == "PENDING"
+        
+        if (is_pening_review == True):
+            raise HTTPException(status_code=400, detail="The fix request has been submitted")
+
+        st_code = (
+            await self.db.execute(
+                select(ItemStatus.code).where(ItemStatus.id == it.item_status_id)
+            )
+        ).scalar()
+        if st_code not in ("DEFECT", "RECHECK", "REJECTED"):
+            raise HTTPException(status_code=400, detail="Fix request allowed only for DEFECT or RECHECK")
+
+        image_ids = list(getattr(body, "image_ids", []) or [])
+        if not image_ids:
+            raise HTTPException(status_code=400, detail="Provide at least 1 image_id")
+
+        try:
+            image_ids = list({int(i) for i in image_ids})
+        except Exception:
+            raise HTTPException(status_code=400, detail="image_ids must be integers")
+
+        rows = await self.db.execute(
+            select(ItemImage.id, ItemImage.review_id, ItemImage.item_id)
+            .where(ItemImage.id.in_(image_ids))
+        )
+        rows = rows.all()
+
+        found_ids = {r.id for r in rows}
+        missing = [i for i in image_ids if i not in found_ids]
+        if missing:
+            raise HTTPException(status_code=400, detail={"message": "Some image_ids do not exist", "missing": missing})
+
+        already_linked = [r.id for r in rows if r.review_id is not None]
+        deleted = [r.id for r in rows if getattr(r, "deleted_at", None)]
+        wrong_item = [r.id for r in rows if (getattr(r, "item_id", None) not in (None, item_id))]
+
+        if already_linked or deleted or wrong_item:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "Invalid images for fix request",
+                    "already_linked": already_linked,
+                    "deleted": deleted,
+                    "wrong_item": wrong_item,
+                },
+            )
+
+        note = getattr(body, "note", None)
+
+        rv = Review(
+            item_id=it.id,
+            review_type="DEFECT_FIX",
+            state="PENDING",
+            submitted_by=user.id,
+            submit_note=note,
+        )
+        self.db.add(rv)
+        await self.db.flush()
+
+        upd = await self.db.execute(
+            text(
+                """
+                UPDATE qc.item_images
+                SET review_id = :rid, kind = 'FIX'
+                WHERE id = ANY(:ids)
+                AND review_id IS NULL
+                AND (item_id IS NULL OR item_id = :item_id)
+                """
+            ),
+            {"rid": rv.id, "ids": image_ids, "item_id": item_id},
+        )
+
+        if upd.rowcount != len(image_ids):
+            await self.db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="Images changed concurrently; please retry"
+            )
+
+        it.current_review_id = rv.id
+
+        await self.db.commit()
+        return {"review_id": rv.id}
+
+    async def list_item_images(self, item_id: int, kinds: str):
+        it = await self.db.get(Item, item_id)
+        if not it or getattr(it, "deleted_at", None):
+            raise HTTPException(status_code=404, detail="Item not found")
+
+        q = select(ItemImage).where(ItemImage.item_id == item_id)
+        if kinds:
+            kind_list = [k.strip().upper() for k in kinds.split(",") if k.strip()]
+            q = q.where(ItemImage.kind.in_(kind_list))
+        rows = (await self.db.execute(q.order_by(ItemImage.uploaded_at.asc(), ItemImage.id.asc()))).scalars().all()
+
+        data = []
+        image_dir = settings.IMAGES_DIR
+        for im in rows:
+            path = norm(im.path)
+            data.append({
+                "id": im.id,
+                "kind": im.kind,
+                "created_at": im.uploaded_at,
+                "meta": im.meta,
+                "url": f"/{image_dir}/{path}" if path else None,
+            })
+        return {"data": data}
+
+    async def get_csv_item_report(self, body: ItemReportRequest, request: Request):
+        line_code = await self.db.scalar(select(ProductionLine.code).where(ProductionLine.id == body.line_id))
+        line_code = str(line_code or body.line_id)
+
+        roll_match = aliased(Item)
+
+        base_cols = [
+            Item.id.label("item_id"),
+            Item.station,
+            Item.line_id,
+            Item.product_code,
+            Item.roll_id,
+            Item.roll_number,
+            Item.bundle_number,
+            Item.job_order_number,
+            Item.roll_width,
+            Item.detected_at,
+            Item.ai_note,
+            ItemStatus.code.label("status_code"),
+        ]
+
+        if body.station == EStation.BUNDLE:
+            base_cols += [
+                roll_match.product_code.label("r_product_code"),
+                roll_match.job_order_number.label("r_job_order_number"),
+                roll_match.roll_width.label("r_roll_width"),
+            ]
+        else:
+            base_cols += [
+                literal(None).label("r_product_code"),
+                literal(None).label("r_job_order_number"),
+                literal(None).label("r_roll_width"),
+            ]
+
+        base = select(*base_cols).join(ItemStatus, ItemStatus.id == Item.item_status_id).where(
+            Item.line_id == body.line_id,
+            Item.station == body.station.value,
+            Item.deleted_at.is_(None),
+        )
+
+        if body.station == EStation.BUNDLE:
+            base = base.outerjoin(
+                roll_match,
+                and_(
+                    roll_match.station == EStation.ROLL.value,
+                    roll_match.line_id == Item.line_id,
+                    roll_match.roll_number == Item.bundle_number,
+                    roll_match.deleted_at.is_(None),
+                ),
+            )
+
+        if body.product_code:
+            like = f"%{body.product_code}%"
+            if body.station == EStation.BUNDLE:
+                base = base.where(or_(Item.product_code.ilike(like), roll_match.product_code.ilike(like)))
+            else:
+                base = base.where(Item.product_code.ilike(like))
+
+        if body.number:
+            like = f"%{body.number}%"
+            base = base.where(or_(Item.roll_number.ilike(like), Item.bundle_number.ilike(like)))
+
+        if body.job_order_number:
+            like = f"%{body.job_order_number}%"
+            if body.station == EStation.BUNDLE:
+                base = base.where(or_(Item.job_order_number.ilike(like), roll_match.job_order_number.ilike(like)))
+            else:
+                base = base.where(Item.job_order_number.ilike(like))
+
+        if body.roll_width_min is not None or body.roll_width_max is not None:
+            width_expr = func.coalesce(Item.roll_width, roll_match.roll_width) if body.station == EStation.BUNDLE else Item.roll_width
+            if body.roll_width_min is not None:
+                base = base.where(width_expr >= body.roll_width_min)
+            if body.roll_width_max is not None:
+                base = base.where(width_expr <= body.roll_width_max)
+
+        if body.status:
+            base = base.where(ItemStatus.code.in_([s.value for s in body.status]))
+
+        if body.detected_from:
+            base = base.where(Item.detected_at >= body.detected_from)
+        if body.detected_to:
+            base = base.where(Item.detected_at <= body.detected_to)
+
+        base_sq = base.subquery("base")
+
+        defects_subq = (
+            select(
+                ItemDefect.item_id.label("item_id"),
+                func.string_agg(func.distinct(DefectType.name_th), literal(", ")).label("defects_csv"),
+            )
+            .join(DefectType, DefectType.id == ItemDefect.defect_type_id)
+            .where(ItemDefect.item_id.in_(select(base_sq.c.item_id)))
+            .group_by(ItemDefect.item_id)
+            .subquery()
+        )
+
+        q = (
+            select(
+                base_sq.c.item_id,
+                base_sq.c.station,
+                base_sq.c.line_id,
+                base_sq.c.product_code,
+                base_sq.c.roll_id,
+                base_sq.c.roll_number,
+                base_sq.c.bundle_number,
+                base_sq.c.job_order_number,
+                base_sq.c.roll_width,
+                base_sq.c.detected_at,
+                base_sq.c.ai_note,
+                base_sq.c.status_code,
+                defects_subq.c.defects_csv,
+                base_sq.c.r_product_code,
+                base_sq.c.r_job_order_number,
+                base_sq.c.r_roll_width,
+            )
+            .outerjoin(defects_subq, defects_subq.c.item_id == base_sq.c.item_id)
+            .order_by(base_sq.c.detected_at.desc(), base_sq.c.item_id.desc())
+        )
+
+        header = [
+            "PRODUCT CODE",
+            "ROLL NUMBER" if body.station == EStation.ROLL else "BUNDLE NUMBER",
+            "JOB ORDER NUMBER",
+            "ROLL ID",
+            "ROLL WIDTH",
+            "TIMESTAMP",
+            "STATUS",
+        ]
+
+        def row_to_list(m) -> list:
+            product_code_val = m.get("product_code")
+            job_order_val = m.get("job_order_number")
+            width_val = m.get("roll_width")
+            roll_id = m.get("roll_id")
+            if body.station == EStation.BUNDLE:
+                product_code_val = product_code_val or m.get("r_product_code")
+                job_order_val = job_order_val or m.get("r_job_order_number")
+                width_val = width_val if width_val is not None else m.get("r_roll_width")
+
+            num_val = m.get("roll_number") if body.station == EStation.ROLL else m.get("bundle_number")
+            status_str = status_label(m.get("status_code"), m.get("defects_csv"), None)
+            dt = m.get("detected_at")
+            readable_ts = dt.strftime("%d/%m/%Y %H:%M:%S") if dt else ""
+            width_out = "" if width_val is None else str(width_val)
+            return [product_code_val or "", num_val or "", job_order_val or "", roll_id, width_out, readable_ts, status_str]
+
+        async def acsv_iter():
+            buf = StringIO()
+            writer = csv.writer(buf, lineterminator="\n")
+            THRESHOLD = 256 * 1024 
+
+            try:
+                writer.writerow(header)
+                yield buf.getvalue()
+                buf.seek(0); buf.truncate(0)
+
+                result = await self.db.stream(q)
+                try:
+                    async for row in result.mappings():
+                        if await request.is_disconnected():
+                            return
+                        writer.writerow(row_to_list(row))
+                        if buf.tell() >= THRESHOLD:
+                            yield buf.getvalue()
+                            buf.seek(0); buf.truncate(0)
+                finally:
+                    await result.close()
+
+                leftover = buf.getvalue()
+                if leftover:
+                    yield leftover
+
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("CSV /report stream crashed")
+                chunk = buf.getvalue()
+                if chunk:
+                    try:
+                        yield chunk
+                    except Exception:
+                        pass
+                return
+
+        today = datetime.now().strftime("%Y%m%d")
+        filename = f"items_{body.station.value.lower()}_line{line_code}_{today}.csv"
+
+        return StreamingResponse(
+            acsv_iter(),
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Cache-Control": "no-store",
+            },
+        )
+
     def _apply_role_default_window(self, q, user_role: str):
         now = datetime.now(TZ)
         if user_role == "VIEWER":
@@ -315,16 +719,11 @@ class ItemService:
         roll_width_min: Optional[float],
         roll_width_max: Optional[float],
         roll_id: Optional[str],
-        status: Optional[List[EItemStatusCode]],        # list of enum codes
+        status: Optional[List[EItemStatusCode]],
         detected_from: Optional[datetime],
         detected_to: Optional[datetime],
         user_role: str,
     ):
-        """
-        Build the base SELECT with lightweight filters. Avoids unnecessary joins so the
-        planner can leverage (item_status_id, detected_at) and (line_id, station, detected_at).
-        Heavy projections (lateral fallback, per-row counts) should be applied AFTER pagination.
-        """
         review_pending_exists = exists(
             select(1)
             .select_from(Review)
@@ -406,9 +805,8 @@ class ItemService:
             )
         )
 
-        # Simple, sargable filters
         if line_id is not None:
-            q = q.where(Item.line_id == line_id)       # no join to ProductionLine
+            q = q.where(Item.line_id == line_id)
         if station is not None:
             q = q.where(Item.station == station)
         if product_code:
@@ -483,6 +881,55 @@ class ItemService:
         q = q.add_columns(prod_eff, jo_eff, width_eff)
         return q
     
+    def _build_item_filters(
+        self,
+        *,
+        line_id: Optional[int] = None,
+        station: StationT | None = None,
+        product_code: Optional[str] = None,
+        number: Optional[str] = None,
+        job_order_number: Optional[str] = None,
+        roll_width_min: Optional[float] = None,
+        roll_width_max: Optional[float] = None,
+        status: StatusListT = None,
+        detected_from: Optional[datetime] = None,
+        detected_to: Optional[datetime] = None,
+    ) -> list[BinaryExpression]:
+        clauses: list[BinaryExpression] = [Item.deleted_at.is_(None)]
+
+        if line_id is not None:
+            clauses.append(Item.line_id == line_id)
+
+        if station is not None:
+            st = station.value if hasattr(station, "value") else station
+            clauses.append(Item.station == st)
+
+        if product_code:
+            clauses.append(Item.product_code.ilike(f"%{product_code}%"))
+
+        if number:
+            like = f"%{number}%"
+            clauses.append(or_(Item.roll_number.ilike(like), Item.bundle_number.ilike(like)))
+
+        if job_order_number:
+            clauses.append(Item.job_order_number.ilike(f"%{job_order_number}%"))
+
+        if roll_width_min is not None:
+            clauses.append(Item.roll_width >= roll_width_min)
+        if roll_width_max is not None:
+            clauses.append(Item.roll_width <= roll_width_max)
+
+        if status:
+            vals = [(s.value if hasattr(s, "value") else s) for s in status]
+            clauses.append(ItemStatus.code.in_(vals))
+
+        if detected_from:
+            clauses.append(Item.detected_at >= detected_from)
+        if detected_to:
+            clauses.append(Item.detected_at <= detected_to)
+
+        return clauses
+    
     def _serialize_row(self, r) -> dict:
         return {
             "id": r.id,
@@ -507,53 +954,73 @@ class ItemService:
             "defects": list(r.defects_array or []),
         }
         
-def build_item_filters(
-    *,
-    line_id: Optional[int] = None,
-    station: StationT | None = None,
-    product_code: Optional[str] = None,
-    number: Optional[str] = None,
-    job_order_number: Optional[str] = None,
-    roll_width_min: Optional[float] = None,
-    roll_width_max: Optional[float] = None,
-    status: StatusListT = None,
-    detected_from: Optional[datetime] = None,
-    detected_to: Optional[datetime] = None,
-) -> list[BinaryExpression]:
-    clauses: list[BinaryExpression] = [Item.deleted_at.is_(None)]
+    async def _summarize_station(
+        self,
+        *,
+        line_id: Optional[int] = None,
+        station: Optional[EStation | str] = None,
+        product_code: Optional[str] = None,
+        number: Optional[str] = None,
+        job_order_number: Optional[str] = None,
+        roll_width_min: Optional[float] = None,
+        roll_width_max: Optional[float] = None,
+        status: Optional[Sequence[EItemStatusCode | str]] = None,
+        detected_from: Optional[datetime] = None,
+        detected_to: Optional[datetime] = None,
+    ) -> dict:
+        pending_exists = (
+            select(Review.id)
+            .where(Review.item_id == Item.id, Review.state == "PENDING")
+            .exists()
+        )
+        
 
-    if line_id is not None:
-        clauses.append(Item.line_id == line_id)
+        where_clauses = self._build_item_filters(
+            line_id=line_id,
+            station=station,
+            product_code=product_code,
+            number=number,
+            job_order_number=job_order_number,
+            roll_width_min=roll_width_min,
+            roll_width_max=roll_width_max,
+            status=status,
+            detected_from=detected_from,
+            detected_to=detected_to,
+        )
+        
+        
+        if detected_from is None and detected_to is None:
+            shift_start, shift_end = current_shift_window()
+            where_clauses.append(Item.created_at >= shift_start)
+            where_clauses.append(Item.created_at <= shift_end)
 
-    if station is not None:
-        st = station.value if hasattr(station, "value") else station
-        clauses.append(Item.station == st)
+        q = (
+            select(
+                func.count().label("total"),
+                func.sum(case((ItemStatus.code == "NORMAL", 1), else_=0)).label("normal"),
+                func.sum(case((ItemStatus.code == "QC_PASSED", 1), else_=0)).label("qc_passed"),
+                func.sum(case((ItemStatus.code == "REJECTED", 1), else_=0)).label("rejected"),
+                func.sum(case((ItemStatus.code == "SCRAP", 1), else_=0)).label("scrap"),
+                func.sum(case((ItemStatus.code == "DEFECT", 1), else_=0)).label("defect"),
+                func.sum(case((and_(ItemStatus.code.in_(("DEFECT", "REJECTED")), pending_exists), 1), else_=0)).label("pending_defect"),
+            )
+            .select_from(Item)
+            .join(ItemStatus, ItemStatus.id == Item.item_status_id)
+            .where(*where_clauses)
+        )
 
-    if product_code:
-        clauses.append(Item.product_code.ilike(f"%{product_code}%"))
+        row = (await self.db.execute(q)).first() or (0, 0, 0, 0, 0)
+        total, normal, qc_passed, rejected, scrap, defect, pending_defect = row
+        return {
+            "total": total or 0,
+            "normal": normal or 0,
+            "qc_passed": qc_passed or 0,
+            "rejected": rejected or 0,
+            "scrap": scrap or 0,
+            "defect": defect or 0,
+            "pending_defect": pending_defect or 0,
+        }
 
-    if number:
-        like = f"%{number}%"
-        clauses.append(or_(Item.roll_number.ilike(like), Item.bundle_number.ilike(like)))
-
-    if job_order_number:
-        clauses.append(Item.job_order_number.ilike(f"%{job_order_number}%"))
-
-    if roll_width_min is not None:
-        clauses.append(Item.roll_width >= roll_width_min)
-    if roll_width_max is not None:
-        clauses.append(Item.roll_width <= roll_width_max)
-
-    if status:
-        vals = [(s.value if hasattr(s, "value") else s) for s in status]
-        clauses.append(ItemStatus.code.in_(vals))
-
-    if detected_from:
-        clauses.append(Item.detected_at >= detected_from)
-    if detected_to:
-        clauses.append(Item.detected_at <= detected_to)
-
-    return clauses
 
 def norm(rel: Optional[str]) -> Optional[str]:
     if not rel: return None
@@ -577,69 +1044,3 @@ def status_label(code: str, defects_csv: Optional[str], ai_note: Optional[str]) 
         return "Rejected"
     return code or ""
 
-async def summarize_station(
-    db: AsyncSession,
-    *,
-    line_id: Optional[int] = None,
-    station: Optional[EStation | str] = None,
-    product_code: Optional[str] = None,
-    number: Optional[str] = None,
-    job_order_number: Optional[str] = None,
-    roll_width_min: Optional[float] = None,
-    roll_width_max: Optional[float] = None,
-    status: Optional[Sequence[EItemStatusCode | str]] = None,
-    detected_from: Optional[datetime] = None,
-    detected_to: Optional[datetime] = None,
-) -> dict:
-    pending_exists = (
-        select(Review.id)
-        .where(Review.item_id == Item.id, Review.state == "PENDING")
-        .exists()
-    )
-    
-
-    where_clauses = build_item_filters(
-        line_id=line_id,
-        station=station,
-        product_code=product_code,
-        number=number,
-        job_order_number=job_order_number,
-        roll_width_min=roll_width_min,
-        roll_width_max=roll_width_max,
-        status=status,
-        detected_from=detected_from,
-        detected_to=detected_to,
-    )
-    
-    
-    if detected_from is None and detected_to is None:
-        shift_start, shift_end = current_shift_window()
-        where_clauses.append(Item.created_at >= shift_start)
-        where_clauses.append(Item.created_at <= shift_end)
-
-    q = (
-        select(
-            func.count().label("total"),
-            func.sum(case((ItemStatus.code == "NORMAL", 1), else_=0)).label("normal"),
-            func.sum(case((ItemStatus.code == "QC_PASSED", 1), else_=0)).label("qc_passed"),
-            func.sum(case((ItemStatus.code == "REJECTED", 1), else_=0)).label("rejected"),
-            func.sum(case((ItemStatus.code == "SCRAP", 1), else_=0)).label("scrap"),
-            func.sum(case((ItemStatus.code == "DEFECT", 1), else_=0)).label("defect"),
-            func.sum(case((and_(ItemStatus.code.in_(("DEFECT", "REJECTED")), pending_exists), 1), else_=0)).label("pending_defect"),
-        )
-        .select_from(Item)
-        .join(ItemStatus, ItemStatus.id == Item.item_status_id)
-        .where(*where_clauses)
-    )
-
-    row = (await db.execute(q)).first() or (0, 0, 0, 0, 0)
-    total, normal, qc_passed, rejected, scrap, defect, pending_defect = row
-    return {
-        "total": total or 0,
-        "normal": normal or 0,
-        "qc_passed": qc_passed or 0,
-        "rejected": rejected or 0,
-        "scrap": scrap or 0,
-        "defect": defect or 0,
-        "pending_defect": pending_defect or 0,
-    }
