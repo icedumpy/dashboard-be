@@ -1,6 +1,10 @@
-import pytest
+from fastapi.testclient import TestClient
+from app.main import app
 
-@pytest.mark.anyio
-async def test_health(async_client):
-    r = await async_client.get("/api/v1/health")
-    assert r.status_code == 200
+client = TestClient(app)
+
+def test_health_check():
+    response = client.get("/api/v1/health")
+    assert response.status_code == 200
+
+

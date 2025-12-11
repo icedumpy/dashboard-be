@@ -10,3 +10,7 @@ pydantic_settings
 bcrypt==3.2.2
 python-multipart
 asyncpg
+pydantic==2.11.7
+testcontainers>=3.7,<4.0
+pytest
+httpx

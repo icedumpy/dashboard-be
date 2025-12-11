@@ -1,24 +1,22 @@
-# app/tests/conftest.py
+# api/app/tests/conftest.py
 import os
 os.environ.setdefault("ANYIO_BACKEND", "asyncio")
 
-from pathlib import Path
-
 import sys
-
-API_DIR = Path(__file__).resolve().parents[2] 
-if str(API_DIR) not in sys.path:
-    sys.path.insert(0, str(API_DIR))
-
-import typing as t
 from pathlib import Path
+API_ROOT = Path(__file__).resolve().parents[2] 
+if str(API_ROOT) not in sys.path: 
+    sys.path.insert(0, str(API_ROOT))
+
+import pytest_asyncio
+import logging
+import typing as t
 
 import pytest
-
 from httpx import AsyncClient, ASGITransport
 from asgi_lifespan import LifespanManager
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
@@ -29,141 +27,136 @@ from testcontainers.postgres import PostgresContainer
 
 
 from app.main import app
-
 from app.core.db.session import get_db as get_session
 
-from testcontainers.core.container import DockerContainer, LogMessageWaitStrategy
+# ---------- Logging ----------
+logging.basicConfig(
+    level=logging.INFO,
+    stream=sys.stdout,
+    format="%(levelname)s %(name)s: %(message)s",
+)
+logging.getLogger("alembic").setLevel(logging.INFO)
 
-def _start_pg():
-    c = (
-        DockerContainer("postgres:16-alpine")
-        .with_env("POSTGRES_DB", "qc_test")
-        .with_env("POSTGRES_USER", "postgres")
-        .with_env("POSTGRES_PASSWORD", "postgres")
-        .with_exposed_ports(5432)
-        .waiting_for(LogMessageWaitStrategy("database system is ready to accept connections"))
-    )
-    c.start()
-    host = c.get_container_host_ip()
-    port = int(c.get_exposed_port(5432))
-    url = f"postgresql+psycopg2://postgres:postgres@{host}:{port}/qc_test"
-    return c, url
+# ---------- Paths / sys.path ----------
+API_ROOT = Path(__file__).resolve().parents[2]
+if str(API_ROOT) not in sys.path:
+    sys.path.insert(0, str(API_ROOT))
 
-
+# ---------- Alembic helpers ----------
 def _alembic_config_for_url(db_url: str) -> Config:
-    here = Path(__file__).resolve()
-    api_root = here.parents[2]  
-    ini_path = api_root / "alembic.ini"
-    migrations_dir = api_root / 'app' / 'core' / "migrations"
-
+    ini_path = API_ROOT / "alembic.ini"
+    migrations_dir = API_ROOT / "app" / "core" / "migrations"
     if not ini_path.exists():
         raise FileNotFoundError(f"alembic.ini not found: {ini_path}")
     if not migrations_dir.exists():
         raise FileNotFoundError(f"migrations folder not found: {migrations_dir}")
-
     cfg = Config(str(ini_path))
     cfg.set_main_option("sqlalchemy.url", db_url)
-    # <-- this line fixes your error explicitly
     cfg.set_main_option("script_location", str(migrations_dir))
     return cfg
 
+def _ensure_psycopg2_url(url: str) -> str:
+    # Alembic + sync engine should use psycopg2 explicitly
+    if url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+psycopg2://", 1)
+    return url
 
-@pytest.fixture(scope="session")
-def _pg_container():
-    pg = PostgresContainer("postgres:16-alpine")
-    pg.start()
-    try:
-        yield pg
-    finally:
-        # Always called: pass, fail, or interrupt
-        pg.stop()
+# ---------- Containers & Migration ----------
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="session", autouse=True)
 def _pg_url():
-    c, url = _start_pg()
-    try:
-        yield url
-    finally:
-        c.stop()
+    """
+    Single Postgres container for the whole test run.
+    """
+    with PostgresContainer("postgres:16-alpine") as pg:
+        yield _ensure_psycopg2_url(pg.get_connection_url())
 
-
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="session", autouse=True)
 def _migrated_db(_pg_url: str) -> str:
-    """Run Alembic migrations once against the container DB."""
+    log = logging.getLogger("tests.migration")
+    log.info("Running alembic upgrade head on %s", _pg_url)
+    print("[tests.migration] upgrading to head…", flush=True)
+
     cfg = _alembic_config_for_url(_pg_url)
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, "head")  # sync call
+
+    log.info("Alembic upgrade completed.")
+    print("[tests.migration] upgrade completed.", flush=True)
     return _pg_url
 
+# ---------- DB Connection, Transaction, Session (per test) ----------
+from sqlalchemy.orm import Session as SASession
+@pytest.fixture
+def db_session(_connection: Connection) -> t.Iterator[SASession]:
+    """Per-test Session with SAVEPOINT and auto-reopen on commit."""
+    session = SASession(bind=_connection, future=True)
+
+    # 1) begin nested transaction (SAVEPOINT)
+    session.begin_nested()
+
+    # 2) re-open SAVEPOINT after each commit in the test
+    @event.listens_for(session, "after_transaction_end")
+    def _restart_savepoint(sess, transaction):
+        # only restart the SAVEPOINT when the nested transaction ends
+        if transaction.nested and not transaction._parent.nested:
+            sess.begin_nested()
+
+    try:
+        yield session
+    finally:
+        session.close()
 
 @pytest.fixture
 def _connection(_migrated_db: str) -> t.Iterator[Connection]:
-    """Per-test transaction for isolation."""
     engine = create_engine(_migrated_db, future=True, poolclass=NullPool)
     conn = engine.connect()
     trans = conn.begin()
     try:
         yield conn
     finally:
-        trans.rollback()
-        conn.close()
-        engine.dispose()
-
+        # teardown in strict order
+        try:
+            if trans.is_active:
+                trans.rollback()
+        finally:
+            try:
+                conn.close()
+            finally:
+                engine.dispose()
 
 @pytest.fixture
-def _session_factory(_connection: Connection):
+def session_factory(_connection: Connection):
+    """Create a plain SQLAlchemy Session bound to the per-test connection."""
     return sessionmaker(bind=_connection, expire_on_commit=False, future=True)
 
+# ---------- HTTP Client + Dependency Override ----------
 
-@pytest.fixture
-async def async_client(_session_factory):
-    """ASGI client + dependency override."""
-    db = _session_factory()
+@pytest.fixture(scope="session", autouse=True)
+def _ping_conftest_loaded():
+    logging.getLogger(__name__).info(">>> conftest.py loaded!")
 
+@pytest_asyncio.fixture
+async def async_client(db_session: SASession):
+    """Async test client; overrides get_db to yield the per-test db_session."""
     def _override_get_session():
         try:
-            yield db
+            yield db_session
         finally:
             pass
 
     app.dependency_overrides[get_session] = _override_get_session
 
-    async with LifespanManager(app):
-        async with AsyncClient(app=app, base_url="http://testserver") as client:
-            try:
-                yield client
-            finally:
-                app.dependency_overrides.pop(get_session, None)
-                db.close()
-
-@pytest.fixture
-async def async_client(_session_factory):
-    db = _session_factory()
-
-    def _override_get_session():
-        try:
-            yield db
-        finally:
-            pass
-
-    app.dependency_overrides[get_session] = _override_get_session
-
-    # Try httpx>=0.28 first (supports lifespan arg). If not, fallback.
+    # httpx >= 0.28 supports lifespan arg; also raise_app_exceptions by default
     try:
-        transport = ASGITransport(app=app, lifespan="on")  # httpx >= 0.28
-        # Transport handles startup/shutdown; no LifespanManager needed.
+        transport = ASGITransport(app=app, lifespan="on")
         async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-            try:
-                yield client
-            finally:
-                app.dependency_overrides.pop(get_session, None)
-                db.close()
+            yield client
     except TypeError:
-        # Older httpx: no lifespan arg; manage lifespan ourselves.
-        transport = ASGITransport(app=app)  # httpx < 0.28
+        # Older httpx
+        transport = ASGITransport(app=app)
         async with LifespanManager(app):
             async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-                try:
-                    yield client
-                finally:
-                    app.dependency_overrides.pop(get_session, None)
-                    db.close()
+                yield client
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+        # db_session is closed by its own fixture
