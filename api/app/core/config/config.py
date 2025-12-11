@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     DATABASE_URL: Optional[str] = None
 
     # Auth
-    JWT_SECRET: SecretStr = SecretStr("fitesadev")
+    JWT_SECRET: str = 'fitesa-dev'
     JWT_ALG: str = "HS256"
     ACCESS_TOKEN_MIN: PositiveInt = 60
     REFRESH_TOKEN_DAYS: PositiveInt = 7

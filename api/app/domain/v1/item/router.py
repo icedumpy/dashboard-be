@@ -105,12 +105,12 @@ async def acknowledge_item(
     return await svc.ack_item(item_id, getattr(user, "id", None))
 
 
-@router.get("/{item_id}/history", response_model=List[ItemEventOut])
+@router.get("/{item_id}/history", response_model=list[ItemEventOut])
 async def get_item_history(
     item_id: int,
     svc: ItemService = Depends(get_service),
 ):
-    return svc.get_item_history(item_id)
+    return await svc.get_item_history(item_id)
 
 @router.post("/{item_id}/fix-request")
 async def submit_fix_request(

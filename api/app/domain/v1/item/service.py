@@ -98,7 +98,6 @@ class ItemService:
         data = [self._serialize_row(r) for r in rows]
 
         summary = await self._summarize_station(
-            self.db,
             line_id=line_id,
             station=station,
             product_code=product_code,
@@ -342,12 +341,13 @@ class ItemService:
         id_to_name: dict[int, str] = {}
         all_ids = after_ids | before_ids
         if all_ids:
-            res = await db.execute(
+            res = await self.db.execute(
                 select(DefectType.id, DefectType.name_th).where(DefectType.id.in_(all_ids))
             )
             id_to_name = {id_: name for id_, name in res.all()}
 
         data: list[ItemEventOut] = []
+        print("============= ItemService.get_item_history => ", data);
         for r in rows:
             details = (getattr(r, "details", None) or {})
             show_defects = "DEFECT" in (r.from_status_code, r.to_status_code)
