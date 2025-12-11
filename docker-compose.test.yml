@@ -1,0 +1,55 @@
+version: "3.9"
+
+services:
+  db_test:
+    image: postgres:16-alpine
+    container_name: qc_db_test
+    environment:
+      POSTGRES_DB: ${TEST_POSTGRES_DB}
+      POSTGRES_USER: ${TEST_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${TEST_POSTGRES_PASSWORD}
+    ports:
+      - "${TEST_POSTGRES_PORT:-55432}:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  migrate_test:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: qc_migrate_test
+    env_file:
+      - .env.test
+    depends_on:
+      db_test:
+        condition: service_healthy
+    command:
+      [
+        "bash","-lc",
+        "alembic -c /app/alembic.ini upgrade head"
+      ]
+    restart: "no"
+
+  e2e:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: qc_e2e
+    env_file:
+      - .env.test
+    depends_on:
+      migrate_test:
+        condition: service_completed_successfully
+    volumes:
+      - ./api:/app
+    command:
+      [
+        "bash","-lc",
+        "pytest -q"
+      ]
+    restart: "no"
