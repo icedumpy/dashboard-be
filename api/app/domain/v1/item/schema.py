@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, condecimal
+from pydantic import BaseModel, Field, condecimal, ConfigDict
 from typing import List, Optional, Literal, Any, Dict
 from datetime import datetime
 from app.core.db.repo.models import EStation, EItemStatusCode
@@ -61,16 +61,25 @@ class UpdateItemStatusBody(BaseModel):
     meta: Optional[Dict[str, Any]] = None 
 
 class FixRequestBody(BaseModel):
-    image_ids: List[int] = Field(..., example=[1])
-    note: Optional[str] = Field(None, example="Fixed defect using patching method")
+    image_ids: list[int] = Field(
+        ...,
+        description="IDs of images to attach",
+        json_schema_extra={"example": [1]},
+    )
+    note: str | None = Field(
+        None,
+        description="Optional note about the fix",
+        json_schema_extra={"example": "Fixed defect using patching method"},
+    )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "image_ids": [1],
-                "note": "Fixed defect using patching method"
+                "note": "Fixed defect using patching method",
             }
         }
+    )
         
 class ItemReportRequest(BaseModel):
     line_id: int = Field(..., ge=1, description="Numeric line id")

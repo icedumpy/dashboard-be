@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config.config import settings
 from app.domain.v1.item.schema import FixRequestBody, ItemEditIn, ItemAckOut, ItemEventOut, ActorOut, ItemReportRequest
-from app.utils.helper.helper import current_shift_window, TZ, require_same_line
+from app.utils.helper.helper import current_shift_window, TZ
 from app.utils.helper.paginate import paginate
 from app.core.db.repo.models import EStation, EItemStatusCode, DefectType, User, ItemSortField, EOrderBy, ItemEvent
 from app.core.db.repo.models import Item, ItemStatus, Review, ItemDefect, ItemImage, StatusChangeRequest, ProductionLine, ReviewStateEnum

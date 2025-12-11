@@ -1,5 +1,5 @@
-from pydantic import BaseModel, Field
-from typing import List, Optional, Literal, Any, Dict
+from pydantic import BaseModel, Field, ConfigDict
+from typing import List, Optional, Dict
 
 class StatusChangeRequestCreate(BaseModel):
     item_id: int
@@ -24,16 +24,25 @@ class StatusChangeRequestOut(BaseModel):
 
 
 class DecisionRequestBody(BaseModel):
-    decision: str = Field(..., example="APPROVED")
-    note: Optional[str] = Field(None, example="QC failed at visual inspection")
+    decision: str = Field(
+        ...,
+        description="Final decision",
+        json_schema_extra={"example": "APPROVED"},
+    )
+    note: Optional[str] = Field(
+        None,
+        description="Optional note",
+        json_schema_extra={"example": "QC failed at visual inspection"},
+    )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "decision": "APPROVED",
-                "note": "Approved"
+                "note": "Approved",
             }
         }
+    )
 
 
 
