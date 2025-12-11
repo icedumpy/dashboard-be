@@ -347,7 +347,6 @@ class ItemService:
             id_to_name = {id_: name for id_, name in res.all()}
 
         data: list[ItemEventOut] = []
-        print("============= ItemService.get_item_history => ", data);
         for r in rows:
             details = (getattr(r, "details", None) or {})
             show_defects = "DEFECT" in (r.from_status_code, r.to_status_code)
