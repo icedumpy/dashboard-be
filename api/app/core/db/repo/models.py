@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Optional, List, Dict, Literal
 from sqlalchemy import (
-    String, Boolean, ForeignKey, UniqueConstraint, Numeric, Text,
+    BigInteger, String, Boolean, ForeignKey, UniqueConstraint, Numeric, Text,
     func, Integer, Index
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -379,3 +379,22 @@ class StatusChangeRequestDefect(Base):
 
     request: Mapped["StatusChangeRequest"] = relationship(back_populates="defects")
     
+    
+class Camera(Base):
+    __tablename__ = "cameras"
+    __table_args__ = {"schema": "qc"}
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    # channel_id INT NOT NULL
+    channel_id: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # line_id BIGINT REFERENCES qc.production_lines(id) ON UPDATE CASCADE ON DELETE SET NULL
+    # -> nullable=True to match ON DELETE SET NULL
+    line_id: Mapped[int | None] = mapped_column(
+        ForeignKey("qc.production_lines.id", onupdate="CASCADE", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    camera_name: Mapped[str] = mapped_column(String, nullable=False)
+    camera_ip: Mapped[str] = mapped_column(String, nullable=False)

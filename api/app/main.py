@@ -4,6 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from pathlib import Path
+import os
 
 from app.core.config.config import settings
 from app.core.middleware.auth_validate import jwt_middleware
@@ -33,12 +34,16 @@ app = FastAPI(
     swagger_ui_parameters={"persistAuthorization": True},
 )
 
+base = Path(f"./{settings.HLS_ROOT}")
+base.mkdir(parents=True, exist_ok=True)
+
 # ---- Static images ----
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 IMAGES_DIR = PROJECT_ROOT / "images"
 IMAGES_PREFIX = f"/{settings.IMAGES_DIR}".rstrip("/")
 
 app.mount(IMAGES_PREFIX, StaticFiles(directory=str(IMAGES_DIR)), name="images")
+app.mount("/hls", StaticFiles(directory=settings.HLS_ROOT), name="hls")
 
 app.add_middleware(
     CORSMiddleware,
@@ -73,15 +78,14 @@ async def jwt_bypass_wrapper(request: Request, call_next):
         or path.startswith(f"{IMAGES_PREFIX}/")
         or path.startswith(AUTH_PREFIX)        
         or path.startswith("/api/v1/health")        
+        or path.startswith("/hls/")        
     ):
         return await call_next(request)
 
     return await jwt_middleware(request, call_next)
 
-# ---- Routers ----
 app.include_router(v1_router, prefix="/api/v1")
 
-# ---- Swagger/OpenAPI: add Bearer auth & set as default security ----
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema

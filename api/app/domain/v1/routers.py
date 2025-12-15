@@ -2,6 +2,7 @@ from fastapi import APIRouter
 from . import health
 from .item.router import router as item_router
 from .item_status.router import router as item_status_router
+from .camera.router import router as camera_router
 from .auth.router import router as auth_router
 from .image.router import router as image_router
 from .production_line.router import router as production_line_router
@@ -25,3 +26,4 @@ router.include_router(defect_type_router, prefix="/defect_type", tags=["defect_t
 router.include_router(change_status_router, prefix="/change_status", tags=["change_status"])
 router.include_router(dashboard_router, prefix="/dashboard", tags=["dashboard"])
 router.include_router(item_status_router, prefix="/item_status", tags=["item_status"])
+router.include_router(camera_router, prefix="/camera", tags=["camera"])
