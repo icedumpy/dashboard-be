@@ -4,8 +4,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from pathlib import Path
-import os
+import logging
 
+from app.core.logger.app_logger import ExcludeHlsAccessFilter
 from app.core.config.config import settings
 from app.core.middleware.auth_validate import jwt_middleware
 from app.domain.v1.routers import router as v1_router
@@ -33,6 +34,8 @@ app = FastAPI(
     redoc_url=REDOC_PATH,
     swagger_ui_parameters={"persistAuthorization": True},
 )
+
+logging.getLogger("uvicorn.access").addFilter(ExcludeHlsAccessFilter())
 
 base = Path(f"{settings.HLS_ROOT}")
 base.mkdir(parents=True, exist_ok=True)

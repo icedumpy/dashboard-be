@@ -122,7 +122,7 @@ class CameraService:
 
       stream_name = f"channel_{channel_id}"
       hls_output_path = f"./hls/{stream_name}.m3u8"
-      output_path = "." + hls_output_path
+      output_path = hls_output_path
       print("hls_output_path => ", output_path)
 
       print(f"[HLS] HLS_ROOT = {settings.HLS_ROOT}, exists={os.path.isdir(settings.HLS_ROOT)}")
