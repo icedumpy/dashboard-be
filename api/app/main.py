@@ -34,7 +34,7 @@ app = FastAPI(
     swagger_ui_parameters={"persistAuthorization": True},
 )
 
-base = Path(f"./{settings.HLS_ROOT}")
+base = Path(f"{settings.HLS_ROOT}")
 base.mkdir(parents=True, exist_ok=True)
 
 # ---- Static images ----

@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     IMAGES_DIR: str = "images"
     
     #  rtsp_url = f'rtsp://{username}:{password}@{base_url}{path_template.format(channel=channel)}'
-    HLS_ROOT: str = "/hls"
+    HLS_ROOT: str = "./hls"
     CAMERA_RTSP_USERNAME: str = "user"
     CAMERA_RTSP_PASSWORD: str = "password"
     CAMERA_RTSP_PATH: str = "/cam/realmonitor?subtype=0&channel="
