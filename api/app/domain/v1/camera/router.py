@@ -51,4 +51,4 @@ async def get_stream_url(
 async def reset_camera(
     service: CameraService = Depends(get_service),
 ):
-  return await service.reset_focus()
+  return service.reset_focus()
