@@ -112,7 +112,9 @@ class CameraService:
     def _build_rtsp_url(self, camera_ip: str, channel_id: str) -> str:
       user = quote(settings.CAMERA_RTSP_USERNAME, safe="")
       pwd = quote(settings.CAMERA_RTSP_PASSWORD, safe="")
-      return f"rtsp://{user}:{pwd}@{camera_ip}{settings.CAMERA_RTSP_PATH}{channel_id}"
+      rtsp_path = settings.CAMERA_RTSP_PATH.replace('{channel}', str(channel_id))
+
+      return f"rtsp://{user}:{pwd}@{camera_ip}{rtsp_path}"
 
 
     def _ensure_ffmpeg_running_for(self, channel_id: int, camera_ip: str) -> str:
