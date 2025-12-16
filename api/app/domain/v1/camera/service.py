@@ -119,7 +119,7 @@ class CameraService:
       rtsp_url = self._build_rtsp_url(camera_ip, channel_id)
 
       stream_name = f"channel_{channel_id}"
-      hls_output_path = os.path.join(settings.HLS_ROOT.replce('./', ''), f"{stream_name}.m3u8")
+      hls_output_path = os.path.join(settings.HLS_ROOT.replace('./', ''), f"{stream_name}.m3u8")
       output_path = "." + hls_output_path
       print("hls_output_path => ", output_path)
 
