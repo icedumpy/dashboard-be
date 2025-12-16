@@ -140,14 +140,21 @@ class CameraService:
             "-loglevel", "info",
             "-rtsp_transport", "tcp",
             "-i", rtsp_url,
-            "-c:v", "copy",
-            "-an",
+
+            # TRANSCODE to H.264 so browsers can play it
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-tune", "zerolatency",
+            "-profile:v", "baseline",
+            "-level", "3.1",
+
+            "-an",  # or use "-c:a", "aac" if you want audio
             "-f", "hls",
             "-hls_time", "2",
             "-hls_list_size", "10",
             "-hls_flags", "delete_segments+omit_endlist",
-            output_path,
-          ]
+            hls_output_path,
+        ]
 
           print("[FFmpeg] Command:", " ".join(cmd))
 
