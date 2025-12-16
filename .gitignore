@@ -5,7 +5,9 @@ __pycache__/
 
 *.DS_Store
 
+
 api/images/*
+api/hls/*
 # C extensions
 *.so
 
