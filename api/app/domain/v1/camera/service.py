@@ -147,6 +147,12 @@ class CameraService:
             "-tune", "zerolatency",
             "-profile:v", "baseline",
             "-level", "3.1",
+            
+            "-crf", "28",
+            
+            "-g", "50",
+            "-keyint_min", "50",
+            "-sc_threshold", "0",
 
             "-an",  # or use "-c:a", "aac" if you want audio
             "-f", "hls",
