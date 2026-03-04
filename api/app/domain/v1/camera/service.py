@@ -137,6 +137,7 @@ class CameraService:
 
           cmd = [
             "ffmpeg",
+            "-hide_banner",
             "-loglevel", "info",
             "-rtsp_transport", "tcp",
             "-i", rtsp_url,
@@ -158,8 +159,11 @@ class CameraService:
             "-f", "hls",
             "-hls_time", "2",
             "-hls_list_size", "10",
-            "-hls_flags", "delete_segments+omit_endlist",
-            hls_output_path,
+            "-hls_flags", "delete_segments+omit_endlist+independent_segments+temp_file",
+            # hls_output_path,
+            
+            "-hls_segment_filename", f"./hls/{stream_name}_%06d.ts",
+            "-hls_wrap", "1000",
         ]
 
           print("[FFmpeg] Command:", " ".join(cmd))
