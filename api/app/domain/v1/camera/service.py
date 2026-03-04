@@ -163,7 +163,7 @@ class CameraService:
             # hls_output_path,
             
             "-hls_segment_filename", f"./hls/{stream_name}_%06d.ts",
-            "-hls_wrap", "1000",
+            hls_output_path
         ]
 
           print("[FFmpeg] Command:", " ".join(cmd))
