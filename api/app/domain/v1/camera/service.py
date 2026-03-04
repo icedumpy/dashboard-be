@@ -136,31 +136,51 @@ class CameraService:
               return stream_name
 
           cmd = [
-            "ffmpeg",
-            "-loglevel", "info",
-            "-rtsp_transport", "tcp",
-            "-i", rtsp_url,
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel", "info",
 
-            # TRANSCODE to H.264 so browsers can play it
-            "-c:v", "libx264",
-            "-preset", "veryfast",
-            "-tune", "zerolatency",
-            "-profile:v", "baseline",
-            "-level", "3.1",
-            
-            "-crf", "28",
-            
-            "-g", "50",
-            "-keyint_min", "50",
-            "-sc_threshold", "0",
+                # RTSP robustness / timeouts (important for long running)
+                "-rtsp_transport", "tcp",
+                "-stimeout", "5000000",        # 5s (microseconds)
+                "-rw_timeout", "5000000",      # 5s (microseconds)
 
-            "-an",  # or use "-c:a", "aac" if you want audio
-            "-f", "hls",
-            "-hls_time", "2",
-            "-hls_list_size", "10",
-            "-hls_flags", "delete_segments+omit_endlist",
-            hls_output_path,
-        ]
+                # Timestamp sanity (prevents weird “past date” behavior on discontinuity)
+                "-fflags", "+genpts",
+                "-use_wallclock_as_timestamps", "1",
+
+                "-i", rtsp_url,
+
+                # Video encode
+                "-c:v", "libx264",
+                "-preset", "veryfast",
+                "-tune", "zerolatency",
+                "-profile:v", "baseline",
+                "-level", "3.1",
+
+                # Rate control (CRF is ok; add maxrate/bufsize if you want more stability)
+                "-crf", "28",
+
+                # GOP aligned with hls_time (2s segments; pick fps-based GOP if you know fps)
+                "-g", "50",
+                "-keyint_min", "50",
+                "-sc_threshold", "0",
+
+                "-an",
+
+                # HLS output
+                "-f", "hls",
+                "-hls_time", "2",
+                "-hls_list_size", "10",
+                "-hls_allow_cache", "0",
+                "-hls_flags", "delete_segments+omit_endlist+independent_segments+temp_file",
+
+                # IMPORTANT: stable segment filenames + wrap so it never grows forever
+                "-hls_segment_filename", f"./hls/{stream_name}_%06d.ts",
+                "-hls_wrap", "1000",
+
+                hls_output_path,
+            ]
 
           print("[FFmpeg] Command:", " ".join(cmd))
 
