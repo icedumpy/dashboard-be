@@ -142,8 +142,8 @@ class CameraService:
 
                 # RTSP robustness / timeouts (important for long running)
                 "-rtsp_transport", "tcp",
-                "-stimeout", "5000000",        # 5s (microseconds)
-                "-rw_timeout", "5000000",      # 5s (microseconds)
+                "-stimeout", "30000000",        # 30s (microseconds)
+                # "-rw_timeout", "30000000",      # 30s (microseconds)
 
                 # Timestamp sanity (prevents weird “past date” behavior on discontinuity)
                 "-fflags", "+genpts",
