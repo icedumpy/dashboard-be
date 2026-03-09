@@ -20,7 +20,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config.config import settings
 from app.domain.v1.item.schema import FixRequestBody, ItemEditIn, ItemAckOut, ItemEventOut, ActorOut, ItemReportRequest
 from app.utils.helper.helper import current_shift_window, TZ
-from app.utils.helper.paginate import paginate
 from app.core.db.repo.models import EStation, EItemStatusCode, DefectType, User, ItemSortField, EOrderBy, ItemEvent
 from app.core.db.repo.models import Item, ItemStatus, Review, ItemDefect, ItemImage, StatusChangeRequest, ProductionLine, ReviewStateEnum
 
@@ -58,7 +57,7 @@ class ItemService:
         detected_from: Optional[datetime],
         detected_to: Optional[datetime],
     ) -> dict:
-        q = self._build_item_query(
+        id_q = self._build_item_id_query(
             station=station,
             line_id=line_id,
             product_code=product_code,
@@ -73,8 +72,6 @@ class ItemService:
             user_role=user_role,
         )
 
-        q = self._add_bundle_roll_fallback(q)
-        
         allowed_sort_fields = {
             ItemSortField[col.name]: getattr(Item, col.name)
             for col in Item.__table__.columns
@@ -84,17 +81,57 @@ class ItemService:
         if sort_by:
             if sort_by == ItemSortField.status_code:
                 col = ItemStatus.display_order
+                id_q = id_q.join(ItemStatus, Item.item_status_id == ItemStatus.id)
             else:
                 col = allowed_sort_fields[sort_by]
             if order_by and order_by.lower() == EOrderBy.ASC:
-                q = q.order_by(col.asc())
+                id_q = id_q.order_by(col.asc())
             else:
-                q = q.order_by(col.desc())
+                id_q = id_q.order_by(col.desc())
         else:
-            q = q.order_by(ItemStatus.display_order.asc(), Item.detected_at.desc(), Item.id.desc())
-        
+            id_q = (
+                id_q
+                .join(ItemStatus, Item.item_status_id == ItemStatus.id)
+                .order_by(ItemStatus.display_order.asc(), Item.detected_at.desc(), Item.id.desc())
+            )
 
-        rows, total = await paginate(self.db, q, page, page_size)
+        page_size = max(1, min(page_size, 100))
+        offset = (page - 1) * page_size
+
+        count_q = select(func.count()).select_from(id_q.order_by(None).subquery())
+        total = (await self.db.execute(count_q)).scalar_one() or 0
+
+        page_ids = (await self.db.execute(id_q.offset(offset).limit(page_size))).scalars().all()
+        rows = []
+
+        if page_ids:
+            q = self._build_item_query(
+                station=station,
+                line_id=line_id,
+                product_code=product_code,
+                number=number,
+                job_order_number=job_order_number,
+                roll_width_min=roll_width_min,
+                roll_width_max=roll_width_max,
+                roll_id=roll_id,
+                status=status,
+                detected_from=detected_from,
+                detected_to=detected_to,
+                user_role=user_role,
+            ).where(Item.id.in_(page_ids))
+
+            # ROLL rows do not need bundle fallback lookup.
+            if station != EStation.ROLL:
+                q = self._add_bundle_roll_fallback(q)
+
+            order_expr = case(
+                {item_id: idx for idx, item_id in enumerate(page_ids)},
+                value=Item.id,
+                else_=len(page_ids),
+            )
+            q = q.order_by(order_expr)
+            rows = (await self.db.execute(q)).all()
+
         data = [self._serialize_row(r) for r in rows]
 
         summary = await self._summarize_station(
@@ -707,6 +744,91 @@ class ItemService:
             q = q.where(Item.detected_at >= now - timedelta(days=30))
         return q
 
+    def _build_item_id_query(
+        self,
+        *,
+        station: Optional[EStation],
+        line_id: Optional[int],
+        product_code: Optional[str],
+        number: Optional[str],
+        job_order_number: Optional[str],
+        roll_width_min: Optional[float],
+        roll_width_max: Optional[float],
+        roll_id: Optional[str],
+        status: Optional[List[EItemStatusCode]],
+        detected_from: Optional[datetime],
+        detected_to: Optional[datetime],
+        user_role: str,
+    ):
+        review_pending_exists = exists(
+            select(1)
+            .select_from(Review)
+            .where(
+                and_(
+                    Review.id == Item.current_review_id,
+                    Review.state == "PENDING",
+                    Review.deleted_at.is_(None),
+                )
+            )
+        )
+
+        scr_pending_exists = exists(
+            select(1)
+            .select_from(StatusChangeRequest)
+            .where(
+                and_(
+                    StatusChangeRequest.item_id == Item.id,
+                    StatusChangeRequest.state == "PENDING",
+                    StatusChangeRequest.deleted_at.is_(None),
+                )
+            )
+        )
+
+        q = (
+            select(Item.id)
+            .select_from(Item)
+            .where(
+                Item.deleted_at.is_(None),
+                not_(review_pending_exists),
+                not_(scr_pending_exists),
+            )
+        )
+
+        if line_id is not None:
+            q = q.where(Item.line_id == line_id)
+        if station is not None:
+            q = q.where(Item.station == station)
+        if product_code:
+            q = q.where(Item.product_code.ilike(f"%{product_code}%"))
+        if number:
+            q = q.where(
+                (Item.roll_number.ilike(f"%{number}%")) |
+                (Item.bundle_number.ilike(f"%{number}%"))
+            )
+        if roll_id:
+            q = q.where(Item.roll_id.ilike(f"%{roll_id}%"))
+        if job_order_number:
+            q = q.where(Item.job_order_number.ilike(f"%{job_order_number}%"))
+        if roll_width_min is not None:
+            q = q.where(Item.roll_width >= roll_width_min)
+        if roll_width_max is not None:
+            q = q.where(Item.roll_width <= roll_width_max)
+
+        if status:
+            codes = [s.value if hasattr(s, "value") else str(s) for s in status]
+            status_ids_subq = select(ItemStatus.id).where(ItemStatus.code.in_(codes))
+            q = q.where(Item.item_status_id.in_(status_ids_subq))
+
+        if detected_from:
+            q = q.where(Item.detected_at >= detected_from)
+        if detected_to:
+            q = q.where(Item.detected_at <= detected_to)
+
+        if detected_from is None and detected_to is None:
+            q = self._apply_role_default_window(q, user_role)
+
+        return q
+
     def _build_item_query(
         self,
         *,
@@ -1042,4 +1164,3 @@ def status_label(code: str, defects_csv: Optional[str], ai_note: Optional[str]) 
     if code == "REJECTED":
         return "Rejected"
     return code or ""
-
