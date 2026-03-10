@@ -1,0 +1,16 @@
+.git
+.gitignore
+.DS_Store
+.env
+.env.*
+.venv
+venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+
+# Runtime-generated folders that can be large and do not need to be in build context.
+images
+hls
