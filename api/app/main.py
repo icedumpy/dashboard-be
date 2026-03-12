@@ -69,12 +69,16 @@ async def add_cache_headers(request: Request, call_next):
         # Keep live playlists fresh but allow tiny cache to avoid request bursts.
         if path.endswith(".m3u8"):
             resp.headers["Cache-Control"] = "public, max-age=1, must-revalidate"
-            resp.headers.pop("Pragma", None)
-            resp.headers.pop("Expires", None)
+            if "Pragma" in resp.headers:
+                del resp.headers["Pragma"]
+            if "Expires" in resp.headers:
+                del resp.headers["Expires"]
         elif path.endswith(".ts"):
             resp.headers["Cache-Control"] = "public, max-age=60, immutable"
-            resp.headers.pop("Pragma", None)
-            resp.headers.pop("Expires", None)
+            if "Pragma" in resp.headers:
+                del resp.headers["Pragma"]
+            if "Expires" in resp.headers:
+                del resp.headers["Expires"]
         else:
             resp.headers["Cache-Control"] = "no-cache, max-age=0"
     return resp
