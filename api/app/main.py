@@ -66,10 +66,17 @@ async def add_cache_headers(request: Request, call_next):
     if path.startswith(f"{IMAGES_PREFIX}/"):
         resp.headers.setdefault("Cache-Control", "public, max-age=86400, immutable")
     elif path.startswith("/hls/"):
-        # HLS playlists/segments must not be cached, otherwise clients can get stuck on old footage.
-        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-        resp.headers["Pragma"] = "no-cache"
-        resp.headers["Expires"] = "0"
+        # Keep live playlists fresh but allow tiny cache to avoid request bursts.
+        if path.endswith(".m3u8"):
+            resp.headers["Cache-Control"] = "public, max-age=1, must-revalidate"
+            resp.headers.pop("Pragma", None)
+            resp.headers.pop("Expires", None)
+        elif path.endswith(".ts"):
+            resp.headers["Cache-Control"] = "public, max-age=60, immutable"
+            resp.headers.pop("Pragma", None)
+            resp.headers.pop("Expires", None)
+        else:
+            resp.headers["Cache-Control"] = "no-cache, max-age=0"
     return resp
 
 # ---- JWT middleware with bypass for OPTIONS & public paths ----

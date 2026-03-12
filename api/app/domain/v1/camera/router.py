@@ -1,5 +1,7 @@
 # api/app/domain/v1/camera/router.py
-from typing import List
+import threading
+import time
+from typing import Dict, List, Tuple
 
 from fastapi import APIRouter, Depends
 
@@ -11,6 +13,11 @@ from .schema import (
 from .service import CameraService, get_service
 
 router = APIRouter()
+_STREAM_URL_CACHE_TTL_SECONDS = 5.0
+_stream_url_cache: Dict[int, Tuple[float, CameraStreamUrlOut]] = {}
+_stream_url_cache_lock = threading.Lock()
+
+
 @router.get(
     "",
     response_model=List[CameraOut],
@@ -40,7 +47,18 @@ async def get_stream_url(
     camera_id: int,
     service: CameraService = Depends(get_service),
 ):
-    return await service.get_stream_url(camera_id)
+    now = time.monotonic()
+    with _stream_url_cache_lock:
+        cached = _stream_url_cache.get(camera_id)
+        if cached and (now - cached[0]) < _STREAM_URL_CACHE_TTL_SECONDS:
+            return cached[1]
+
+    stream_url = await service.get_stream_url(camera_id)
+
+    with _stream_url_cache_lock:
+        _stream_url_cache[camera_id] = (now, stream_url)
+
+    return stream_url
 
 
 @router.post(

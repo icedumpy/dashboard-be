@@ -93,8 +93,10 @@ class CameraService:
                 )
 
             if self._is_playlist_fresh(hls_path, _PLAYLIST_FRESHNESS_SECONDS):
-                cache_buster = int(time.time())
-                url = f"{settings.HLS_PUBLIC_BASE.rstrip('/')}/{stream_name}.m3u8?v={cache_buster}"
+                # Keep URL stable while the same FFmpeg process is alive.
+                # This avoids unnecessary player re-initialization when clients re-call stream-url.
+                stream_version = int(_ffmpeg_started_at.get(channel_id, time.time()))
+                url = f"{settings.HLS_PUBLIC_BASE.rstrip('/')}/{stream_name}.m3u8?v={stream_version}"
                 return CameraStreamUrlOut(url=url)
 
             await asyncio.sleep(_STREAM_READY_POLL_SECONDS)
@@ -215,7 +217,7 @@ class CameraService:
                 "-f",
                 "hls",
                 "-hls_time",
-                "2",
+                "6",
                 "-hls_list_size",
                 "10",
                 "-hls_flags",
