@@ -62,8 +62,14 @@ app.add_middleware(
 @app.middleware("http")
 async def add_cache_headers(request: Request, call_next):
     resp = await call_next(request)
-    if request.url.path.startswith(f"{IMAGES_PREFIX}/"):
+    path = request.url.path
+    if path.startswith(f"{IMAGES_PREFIX}/"):
         resp.headers.setdefault("Cache-Control", "public, max-age=86400, immutable")
+    elif path.startswith("/hls/"):
+        # HLS playlists/segments must not be cached, otherwise clients can get stuck on old footage.
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        resp.headers["Pragma"] = "no-cache"
+        resp.headers["Expires"] = "0"
     return resp
 
 # ---- JWT middleware with bypass for OPTIONS & public paths ----

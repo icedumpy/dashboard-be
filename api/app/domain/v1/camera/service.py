@@ -2,6 +2,7 @@ import os
 import subprocess
 import threading
 from typing import Dict, List, Optional
+from pathlib import Path
 import requests
 from fastapi import Depends, HTTPException, status
 from sqlalchemy import text
@@ -16,7 +17,11 @@ import asyncio
 
 
 _ffmpeg_processes: Dict[int, subprocess.Popen] = {}
+_ffmpeg_started_at: Dict[int, float] = {}
 _ffmpeg_lock = threading.Lock()
+_PLAYLIST_FRESHNESS_SECONDS = 10.0
+_STREAM_READY_TIMEOUT_SECONDS = 10.0
+_STREAM_READY_POLL_SECONDS = 0.5
 
 
 class CameraService:
@@ -69,130 +74,185 @@ class CameraService:
         return CameraOut(**row)
 
     async def get_stream_url(self, camera_id: int) -> CameraStreamUrlOut:
-      row = await self._fetch_camera_row_by_id(camera_id)
-      if not row:
-          raise HTTPException(status_code=404, detail="Camera not found for this channel")
+        row = await self._fetch_camera_row_by_id(camera_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Camera not found for this channel")
 
-      camera_ip = row["camera_ip"]
-      channel_id = row['channel_id']
+        camera_ip = row["camera_ip"]
+        channel_id = row["channel_id"]
+        stream_name = self._ensure_ffmpeg_running_for(channel_id, camera_ip)
+        hls_path = self._playlist_path(stream_name)
 
-      stream_name = self._ensure_ffmpeg_running_for(channel_id, camera_ip)
+        max_attempts = max(1, int(_STREAM_READY_TIMEOUT_SECONDS / _STREAM_READY_POLL_SECONDS))
+        for _ in range(max_attempts):
+            proc = _ffmpeg_processes.get(channel_id)
+            if proc is not None and proc.poll() is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="Failed to start camera stream (RTSP unreachable or refused)",
+                )
 
-      hls_path = f"./hls/{stream_name}.m3u8"
+            if self._is_playlist_fresh(hls_path, _PLAYLIST_FRESHNESS_SECONDS):
+                cache_buster = int(time.time())
+                url = f"{settings.HLS_PUBLIC_BASE.rstrip('/')}/{stream_name}.m3u8?v={cache_buster}"
+                return CameraStreamUrlOut(url=url)
 
-      max_attempts = 10
-      for _ in range(max_attempts):
-          if os.path.exists(hls_path):
-              url = f"{settings.HLS_PUBLIC_BASE}/{stream_name}.m3u8"
-              return CameraStreamUrlOut(url=url)
+            await asyncio.sleep(_STREAM_READY_POLL_SECONDS)
 
-          proc = _ffmpeg_processes.get(channel_id)
-          if proc is not None and proc.poll() is not None:
-              raise HTTPException(
-                  status_code=status.HTTP_502_BAD_GATEWAY,
-                  detail="Failed to start camera stream (RTSP unreachable or refused)",
-              )
-
-          await asyncio.sleep(0.5)
-
-      raise HTTPException(
-          status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-          detail="Camera did not respond in time",
-      )
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Camera did not respond in time",
+        )
       
     def reset_focus(self):
-      controller = CameraZoomController(
-        camera_ip='192.168.10.18',
-        username=settings.CAMERA_RTSP_USERNAME,
-        password=settings.CAMERA_RTSP_PASSWORD
-      )
-      out = controller.reset_focus()
-      return CameraResetFocusOut(status=out)
-      
+        controller = CameraZoomController(
+            camera_ip="192.168.10.18",
+            username=settings.CAMERA_RTSP_USERNAME,
+            password=settings.CAMERA_RTSP_PASSWORD,
+        )
+        out = controller.reset_focus()
+        return CameraResetFocusOut(status=out)
+
     def _build_rtsp_url(self, camera_ip: str, channel_id: str) -> str:
-      user = quote(settings.CAMERA_RTSP_USERNAME, safe="")
-      pwd = quote(settings.CAMERA_RTSP_PASSWORD, safe="")
-      rtsp_path = settings.CAMERA_RTSP_PATH.replace('{channel}', str(channel_id))
+        user = quote(settings.CAMERA_RTSP_USERNAME, safe="")
+        pwd = quote(settings.CAMERA_RTSP_PASSWORD, safe="")
+        rtsp_path = settings.CAMERA_RTSP_PATH.replace("{channel}", str(channel_id))
 
-      return f"rtsp://{user}:{pwd}@{camera_ip}{rtsp_path}"
+        return f"rtsp://{user}:{pwd}@{camera_ip}{rtsp_path}"
 
+    def _playlist_path(self, stream_name: str) -> Path:
+        return Path(settings.HLS_ROOT) / f"{stream_name}.m3u8"
+
+    def _is_playlist_fresh(self, playlist_path: Path, max_age_seconds: float) -> bool:
+        try:
+            age_seconds = time.time() - playlist_path.stat().st_mtime
+            return age_seconds <= max_age_seconds
+        except FileNotFoundError:
+            return False
+
+    def _cleanup_hls_files(self, stream_name: str) -> None:
+        hls_root = Path(settings.HLS_ROOT)
+        hls_root.mkdir(parents=True, exist_ok=True)
+        playlist_name = f"{stream_name}.m3u8"
+        segment_prefix = f"{stream_name}_"
+
+        for file_path in hls_root.iterdir():
+            if not file_path.is_file():
+                continue
+            if file_path.name == playlist_name or (
+                file_path.name.startswith(segment_prefix) and file_path.suffix == ".ts"
+            ):
+                try:
+                    file_path.unlink()
+                except FileNotFoundError:
+                    continue
+                except Exception as ex:
+                    print(f"[HLS] failed to delete stale file {file_path}: {ex}")
 
     def _ensure_ffmpeg_running_for(self, channel_id: int, camera_ip: str) -> str:
-      rtsp_url = self._build_rtsp_url(camera_ip, channel_id)
+        rtsp_url = self._build_rtsp_url(camera_ip, channel_id)
+        stream_name = f"channel_{channel_id}"
+        hls_output_path = self._playlist_path(stream_name)
+        hls_segment_pattern = str(Path(settings.HLS_ROOT) / f"{stream_name}_%06d.ts")
 
-      stream_name = f"channel_{channel_id}"
-      hls_output_path = f"./hls/{stream_name}.m3u8"
-      output_path = hls_output_path
-      print("hls_output_path => ", output_path)
+        print(f"[HLS] HLS_ROOT = {settings.HLS_ROOT}, exists={os.path.isdir(settings.HLS_ROOT)}")
+        print(f"[HLS] channel_id={channel_id}")
+        print(f"[HLS] RTSP URL: {rtsp_url}")
+        print(f"[HLS] HLS output: {hls_output_path}")
 
-      print(f"[HLS] HLS_ROOT = {settings.HLS_ROOT}, exists={os.path.isdir(settings.HLS_ROOT)}")
-      print(f"[HLS] channel_id={channel_id}")
-      print(f"[HLS] RTSP URL: {rtsp_url}")
-      print(f"[HLS] HLS output: {output_path}")
+        with _ffmpeg_lock:
+            proc = _ffmpeg_processes.get(channel_id)
+            if proc is not None and proc.poll() is None:
+                if self._is_playlist_fresh(hls_output_path, _PLAYLIST_FRESHNESS_SECONDS):
+                    return stream_name
 
-      with _ffmpeg_lock:
-          proc = _ffmpeg_processes.get(channel_id)
-          if proc is not None and proc.poll() is None:
-              return stream_name
+                started_at = _ffmpeg_started_at.get(channel_id, time.time())
+                if (
+                    not hls_output_path.exists()
+                    and time.time() - started_at <= _PLAYLIST_FRESHNESS_SECONDS
+                ):
+                    # Fresh process can need a few seconds before first playlist is written.
+                    return stream_name
 
-          cmd = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel", "info",
-            "-rtsp_transport", "tcp",
-            "-i", rtsp_url,
+                print(f"[FFmpeg] channel {channel_id} appears stale, restarting process")
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=3)
 
-            # TRANSCODE to H.264 so browsers can play it
-            "-c:v", "libx264",
-            "-preset", "veryfast",
-            "-tune", "zerolatency",
-            "-profile:v", "baseline",
-            "-level", "3.1",
-            
-            "-crf", "28",
-            
-            "-g", "50",
-            "-keyint_min", "50",
-            "-sc_threshold", "0",
+            self._cleanup_hls_files(stream_name)
+            cmd = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "info",
+                "-rtsp_transport",
+                "tcp",
+                "-i",
+                rtsp_url,
+                # Transcode to H.264 so browsers can play it.
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-tune",
+                "zerolatency",
+                "-profile:v",
+                "baseline",
+                "-level",
+                "3.1",
+                "-crf",
+                "28",
+                "-g",
+                "50",
+                "-keyint_min",
+                "50",
+                "-sc_threshold",
+                "0",
+                "-an",
+                "-f",
+                "hls",
+                "-hls_time",
+                "2",
+                "-hls_list_size",
+                "10",
+                "-hls_flags",
+                "delete_segments+omit_endlist+independent_segments+temp_file",
+                "-hls_segment_filename",
+                hls_segment_pattern,
+                str(hls_output_path),
+            ]
 
-            "-an",  # or use "-c:a", "aac" if you want audio
-            "-f", "hls",
-            "-hls_time", "2",
-            "-hls_list_size", "10",
-            "-hls_flags", "delete_segments+omit_endlist+independent_segments+temp_file",
-            # hls_output_path,
-            
-            "-hls_segment_filename", f"./hls/{stream_name}_%06d.ts",
-            hls_output_path
-        ]
+            print("[FFmpeg] Command:", " ".join(cmd))
 
-          print("[FFmpeg] Command:", " ".join(cmd))
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
 
-          proc = subprocess.Popen(
-              cmd,
-              stdout=subprocess.DEVNULL,
-              stderr=subprocess.PIPE,
-              text=True,
-          )
+            # background thread to log stderr
+            def _log_stderr(p: subprocess.Popen, ch: int) -> None:
+                try:
+                    for line in p.stderr:
+                        print(f"[FFmpeg channel {ch}] {line.rstrip()}")
+                except Exception as ex:
+                    print(f"[FFmpeg channel {ch}] stderr read error: {ex}")
 
-          # background thread to log stderr
-          def _log_stderr(p: subprocess.Popen, ch: int) -> None:
-              try:
-                  for line in p.stderr:
-                      print(f"[FFmpeg channel {ch}] {line.rstrip()}")
-              except Exception as e:
-                  print(f"[FFmpeg channel {ch}] stderr read error: {e}")
+            threading.Thread(
+                target=_log_stderr,
+                args=(proc, channel_id),
+                daemon=True,
+            ).start()
 
-          threading.Thread(
-              target=_log_stderr,
-              args=(proc, channel_id),
-              daemon=True,
-          ).start()
+            _ffmpeg_processes[channel_id] = proc
+            _ffmpeg_started_at[channel_id] = time.time()
+            print(f"[FFmpeg] Started for channel {channel_id}")
 
-          _ffmpeg_processes[channel_id] = proc
-          print(f"[FFmpeg] Started for channel {channel_id}")
-
-          return stream_name
+            return stream_name
 
 
 class CameraZoomController:
